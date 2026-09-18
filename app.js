@@ -55,6 +55,8 @@
     retryBtn: $('#retryBtn'),
     proxyBtn: $('#proxyBtn'),
     nextBtn: $('#nextBtn'),
+    dismissBtn: $('#dismissBtn'),
+    errClose: $('#errClose'),
 
     playBtn: $('#playBtn'),
     muteBtn: $('#muteBtn'),
@@ -405,7 +407,29 @@
     }
   }
 
-  function hideError() { dom.errbox.hidden = true; }
+  function hideError() {
+    if (dom.errbox.hidden) return;
+    dom.errbox.hidden = true;
+    // A pending start-up timeout would otherwise pop the same message straight
+    // back up the moment the user dismisses it.
+    clearTimeout(state.startTimer);
+    state.startTimer = null;
+  }
+
+  /**
+   * Dismiss the error panel and return to watching.
+   *
+   * The panel previously only offered actions, so a viewer who simply wanted the
+   * message out of the way had to leave the channel. Dismissing also lets the
+   * watchdog resume: it is paused while an error is up, so it will retry on its
+   * own if the picture really has stalled.
+   */
+  function dismissError() {
+    hideError();
+    if (!dom.viewPlayer.hidden && document.documentElement.classList.contains('kbd-nav')) {
+      requestAnimationFrame(() => dom.backBtn.focus({ preventScroll: true }));
+    }
+  }
 
   /**
    * Which proxy should be used, if any?
@@ -902,6 +926,10 @@
     if (state.overlay === 'settings') return dom.settingsSheet;
     if (state.overlay === 'help') return dom.helpSheet;
     if (state.overlay === 'drawer') return dom.drawer;
+    // A visible message sits on top of the player, so the controls it covers
+    // must not be reachable — otherwise the D-pad walks onto buttons the
+    // viewer cannot see.
+    if (!dom.errbox.hidden) return dom.errbox;
     if (!dom.viewPlayer.hidden) return dom.viewPlayer;
     return dom.body;
   }
@@ -1151,6 +1179,8 @@
     startPlayback(state.current, true);
   });
   dom.nextBtn.addEventListener('click', () => playNext(1));
+  dom.dismissBtn.addEventListener('click', dismissError);
+  dom.errClose.addEventListener('click', dismissError);
 
   /* Video element */
   const video = dom.video;
@@ -1251,6 +1281,9 @@
     if (!typing && BACK_CODES.has(event.keyCode)) {
       event.preventDefault();
       if (state.overlay) closeOverlays();
+      // A visible message is the topmost layer, so Back clears it rather than
+      // throwing the viewer out of the channel.
+      else if (!dom.errbox.hidden) dismissError();
       else if (!dom.viewPlayer.hidden) go('#/');
       return;
     }

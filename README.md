@@ -303,9 +303,20 @@ throughput instead of the claim, which is what fixes it.
 Mahar, by contrast, is honest — 1080p/720p/360p really do differ ~4× — so
 quality switching genuinely helps there.
 
+### When something goes wrong
+
+Failures surface as a panel over the video offering **Retry**, **Try via proxy**
+(when a proxy is available), **Next channel** and **Dismiss**, plus a close button
+in the corner. Back/Escape dismisses the panel rather than throwing you out of the
+channel — a second Back then returns to the grid. While the panel is up, D-pad
+navigation is confined to it, so the highlight can never land on a control
+hidden behind it. Dismissing also lets the watchdog resume, so it will reconnect
+on its own if the picture really has stalled.
+
 **Proxy fallback.** Channels marked `needsProxy` go through the proxy immediately.
-For everything else the app tries the broadcaster directly, and on a fatal network
-error automatically retries once through the proxy before showing an error.
+Everything else tries the broadcaster directly and recovers through the ladder
+described above — restarting the loader, stepping down a rendition, then trying
+the proxy, before finally reporting a problem.
 
 **Focus.** Focus is moved with `element.focus()`, so screen readers and native
 button activation keep working. Arrow keys inside a text field still move the
