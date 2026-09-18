@@ -392,6 +392,9 @@
   function setSpinner(on, text) {
     dom.spinner.hidden = !on;
     if (text) dom.spinnerText.textContent = text;
+    // The spinner is itself chrome — keep the rest visible while it is up, and
+    // start the auto-hide once it goes away.
+    showControls();
   }
 
   function showError(title, msg, options) {
@@ -400,6 +403,9 @@
     dom.errMsg.textContent = msg;
     dom.proxyBtn.hidden = !(options && options.proxy && !!effectiveProxy());
     dom.errbox.hidden = false;
+    // The chrome must stay visible behind a message, and the D-pad needs to be
+    // able to reach the message's own buttons.
+    showControls();
     // Only pull focus when the player is actually on screen — an error from a
     // background timeout must never yank focus away from the channel grid.
     if (!dom.viewPlayer.hidden && document.documentElement.classList.contains('kbd-nav')) {
@@ -811,6 +817,9 @@
     state.watchdog = null;
     clearTimeout(state.startTimer);
     state.startTimer = null;
+    clearTimeout(hideTimer);
+    hideTimer = null;
+    dom.stage.classList.remove('controls-hidden');
     if (state.hls) { try { state.hls.destroy(); } catch { /* noop */ } state.hls = null; }
     const video = dom.video;
     try { video.pause(); } catch { /* noop */ }
@@ -1014,18 +1023,55 @@
   }
 
   /* ── Auto-hiding controls ───────────────────────────────────────────────── */
-  let hideTimer;
-  function showControls() {
-    dom.stage.classList.remove('controls-hidden');
-    clearTimeout(hideTimer);
-    const busy = !dom.errbox.hidden || !dom.spinner.hidden || !dom.video.paused || !!state.overlay;
-    if (!busy && !dom.viewPlayer.hidden) {
-      hideTimer = setTimeout(() => dom.stage.classList.add('controls-hidden'), 4200);
-    }
+
+  const CONTROLS_HIDE_DELAY = 3500;
+  let hideTimer = null;
+
+  /**
+   * Should the player chrome stay on screen right now?
+   *
+   * Anything that needs the viewer's attention keeps it up: a message, the
+   * buffering spinner, an open panel, or a paused stream (where hiding would
+   * leave a frozen frame and no way to see the controls).
+   *
+   * Note the video *playing* is deliberately not in this list — that is exactly
+   * when the chrome should get out of the way.
+   */
+  function controlsShouldStay() {
+    return !dom.errbox.hidden ||      // a message is showing
+      !dom.spinner.hidden ||          // connecting or buffering
+      !!state.overlay ||              // channel list, settings or help open
+      dom.video.paused;               // paused — no reason to hide
   }
+
+  /** Reveal the chrome, then arm the auto-hide unless something blocks it. */
+  function showControls() {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+    dom.stage.classList.remove('controls-hidden');
+
+    if (dom.viewPlayer.hidden || controlsShouldStay()) return;
+    hideTimer = setTimeout(hideControls, CONTROLS_HIDE_DELAY);
+  }
+
+  function hideControls() {
+    clearTimeout(hideTimer);
+    hideTimer = null;
+    if (dom.viewPlayer.hidden || controlsShouldStay()) return;
+
+    // Never leave focus on a control that is about to become invisible,
+    // otherwise the D-pad highlight sits on something the viewer cannot see.
+    const active = document.activeElement;
+    if (active && active !== dom.stage && dom.stage.contains(active)) {
+      dom.stage.focus({ preventScroll: true });
+    }
+    dom.stage.classList.add('controls-hidden');
+  }
+
+  /** Tap/click on the video: reveal if hidden, otherwise get out of the way. */
   function toggleControls() {
     if (dom.stage.classList.contains('controls-hidden')) showControls();
-    else { clearTimeout(hideTimer); dom.stage.classList.add('controls-hidden'); }
+    else hideControls();
   }
 
   /* ══════════════════════════════════════════════════════════════════════════
@@ -1199,8 +1245,10 @@
   video.addEventListener('pause', () => {
     syncTransport();
     if (state.current) dom.livePill.dataset.state = 'paused';
-    showControls();
+    showControls();   // paused: stay visible so play is reachable
   });
+  // These all change whether the chrome should be up, so re-evaluate.
+  video.addEventListener('play', showControls);
   video.addEventListener('waiting', () => {
     if (!dom.errbox.hidden) return;
     setSpinner(true, 'Buffering…');
@@ -1217,10 +1265,20 @@
   /* Stage interactions */
   dom.stage.addEventListener('click', (event) => {
     if (event.target.closest('.pbar, .errbox, .spinner')) return;
+    // A click anywhere on the video reveals the chrome when it is hidden and
+    // dismisses it when it is up — the usual behaviour for a video surface.
     toggleControls();
   });
+  // Any pointer activity counts as "movement": reveal, then re-arm the timer.
   dom.stage.addEventListener('mousemove', showControls, { passive: true });
-  video.addEventListener('click', (event) => { event.stopPropagation(); togglePlay(); });
+  dom.stage.addEventListener('pointerdown', showControls, { passive: true });
+  dom.stage.addEventListener('touchstart', showControls, { passive: true });
+  video.addEventListener('click', (event) => {
+    event.stopPropagation();
+    // Tapping the picture toggles the chrome rather than playback, so the first
+    // tap on a phone always brings the controls back instead of pausing.
+    toggleControls();
+  });
 
   /* Sheets */
   dom.settingsBtn.addEventListener('click', () => openOverlay('settings'));
@@ -1277,6 +1335,10 @@
     const direction = ARROWS[event.key];
 
     if (direction || !typing) document.documentElement.classList.add('kbd-nav');
+
+    // Any key press counts as interaction, so bring the chrome back before the
+    // key is acted on — otherwise a shortcut would fire with nothing visible.
+    if (!typing && !dom.viewPlayer.hidden) showControls();
 
     if (!typing && BACK_CODES.has(event.keyCode)) {
       event.preventDefault();
@@ -1342,8 +1404,14 @@
     }
   }, true);
 
-  window.addEventListener('mousemove', () => document.documentElement.classList.remove('kbd-nav'), { passive: true });
-  window.addEventListener('pointerdown', () => document.documentElement.classList.remove('kbd-nav'), { passive: true });
+  window.addEventListener('mousemove', () => {
+    document.documentElement.classList.remove('kbd-nav');
+    if (!dom.viewPlayer.hidden) showControls();
+  }, { passive: true });
+  window.addEventListener('pointerdown', () => {
+    document.documentElement.classList.remove('kbd-nav');
+    if (!dom.viewPlayer.hidden) showControls();
+  }, { passive: true });
 
   /* Keep focus trapped inside an open sheet or drawer */
   document.addEventListener('focusin', (event) => {
@@ -1449,5 +1517,6 @@
   window.__mmtv = {
     state, prefs, CHANNELS, showPlayer, openChannel,
     isMixedContent, toggleRotate, syncRotate, currentOrientation,
+    showControls, hideControls, controlsShouldStay,
   };
 })();

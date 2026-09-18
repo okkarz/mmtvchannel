@@ -303,6 +303,25 @@ throughput instead of the claim, which is what fixes it.
 Mahar, by contrast, is honest — 1080p/720p/360p really do differ ~4× — so
 quality switching genuinely helps there.
 
+### Unobtrusive playback chrome
+
+While a stream is playing, the player chrome — channel logo, name, LIVE badge,
+channel-list button, transport controls and volume — **hides itself after about
+3.5 seconds** so nothing sits over the picture. It comes back on any interaction:
+
+- moving the mouse, or any pointer/touch activity
+- pressing any key, including a remote's arrow buttons
+- tapping or clicking the picture
+
+Tapping the video toggles the chrome rather than pausing, so the first tap on a
+phone always brings the controls back instead of stopping playback.
+
+The chrome deliberately **stays visible** when it would be unhelpful to hide it:
+while a stream is paused, while connecting or buffering, while a message is
+showing, and while the channel list, settings or help panel is open. It also
+never leaves keyboard focus on a control that has just become invisible, so the
+D-pad highlight can't end up on something the viewer cannot see.
+
 ### When something goes wrong
 
 Failures surface as a panel over the video offering **Retry**, **Try via proxy**
