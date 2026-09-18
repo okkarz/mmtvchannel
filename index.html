@@ -180,10 +180,16 @@
     <div class="sheet__body">
       <div class="field">
         <label for="proxyInput">CORS proxy URL</label>
+        <p class="field__hint" id="builtinProxyNote" hidden>
+          <strong>Built-in proxy detected</strong> — this deployment includes
+          <code>/api/proxy</code>, so channels that block browsers already work.
+          Leave the field below empty to use it.
+        </p>
         <p class="field__hint">
           Some broadcasters block direct browser playback. Deploy the included
-          <code>proxy/worker.js</code> (free Cloudflare Worker) and paste its URL here.
-          The app then requests <code>&lt;proxy&gt;?url=&lt;stream&gt;</code>.
+          <code>api/proxy.js</code> (Vercel) or <code>proxy/worker.js</code>
+          (Cloudflare Worker), or paste an existing proxy URL here. The app then
+          requests <code>&lt;proxy&gt;?url=&lt;stream&gt;</code>.
         </p>
         <input id="proxyInput" type="url" inputmode="url" spellcheck="false"
                placeholder="https://my-proxy.workers.dev" data-focusable data-focus-group="dialog">

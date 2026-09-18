@@ -50,16 +50,31 @@ Plain-HTTP channels are detected *before* a request is made, so on an HTTPS
 deployment you get an accurate "this channel needs the proxy" explanation rather
 than an opaque network error.
 
-### Deploy it (free, ~1 minute)
+### On Vercel: nothing to do ✅
+
+**Deploying to Vercel sets the proxy up automatically.** [`api/proxy.js`](api/proxy.js)
+is a serverless function served from the same origin, and the app detects it on
+startup. Channels that need it are routed through it; the rest still connect
+directly. There is no account, key or configuration involved.
+
+The catch is usage: proxied streams pass through your Vercel function, so heavy
+viewing of the blocked channels counts against your plan's bandwidth. For a
+personal setup the free tier is usually plenty.
+
+### Elsewhere: deploy the Cloudflare Worker
+
+On any other host (GitHub Pages, Netlify, a static server) there is no server to
+run the proxy, so deploy it separately — free, ~1 minute:
 
 1. Go to <https://dash.cloudflare.com> → **Workers & Pages** → **Create** → **Worker**
 2. Paste the contents of [`proxy/worker.js`](proxy/worker.js) → **Deploy**
 3. In the app: **Settings → CORS proxy URL** → paste your `https://….workers.dev` URL
 
-That's it. With *"Automatically use the proxy for channels that need it"* on
-(default), only the channels that require it are routed through the proxy.
+Either way, with *"Automatically use the proxy for channels that need it"* on
+(default) only the channels that require it are routed through the proxy. A URL
+typed into Settings always takes priority over the built-in one.
 
-The worker also **rewrites HLS playlists** so that every nested URI — segments,
+Both proxies **rewrite HLS playlists** so that every nested URI — segments,
 encryption keys, `EXT-X-MAP` init files, alternate renditions — is proxied too.
 Without that rewriting, relative URIs would resolve against the proxy host and 404.
 
@@ -69,6 +84,12 @@ Without that rewriting, relative URIs would resolve against the proxy host and 4
 node tools/local-proxy.mjs          # http://localhost:8098
 ```
 Then set the proxy URL in Settings to `http://localhost:8098`.
+
+Or run the whole thing exactly as Vercel would, including the built-in function:
+
+```bash
+vercel dev                          # http://localhost:3000
+```
 
 ---
 
@@ -151,20 +172,28 @@ explicitly skips `.m3u8`, `.ts`, `.m4s`, range requests and proxied traffic.
 
 ### Deploying
 
-Any static host works — the whole app is the repo root.
+**Vercel (recommended — the proxy comes with it):**
 
 ```bash
-# Vercel
 vercel --prod
+```
 
+No build step and no configuration: the app is served as static files from the
+repo root, and `api/proxy.js` deploys automatically as a serverless function.
+The app finds it and starts using it, so even the blocked channels work.
+
+**Any other static host** — the whole app is the repo root:
+
+```bash
 # Netlify
 netlify deploy --prod --dir .
 
 # GitHub Pages: push, then Settings → Pages → branch main, folder / (root)
 ```
 
-Set the proxy URL in **Settings** after deploying (preferences are per-device,
-stored in `localStorage`).
+On these hosts there is no serverless function, so the blocked channels need the
+separate Cloudflare Worker (see the proxy section above) — set its URL in
+**Settings**. Preferences are per-device, stored in `localStorage`.
 
 ---
 
@@ -182,7 +211,9 @@ assets/
   fonts/inter-variable.woff2
   icons/                    SVG source + 192/512/maskable PNGs
   logos/                    channel logos (trimmed + resized)
-proxy/worker.js             Cloudflare Worker CORS proxy  ← deploy this
+api/proxy.js                serverless CORS proxy (auto-used on Vercel)
+vercel.json                 headers + routing for the Vercel deploy
+proxy/worker.js             the same proxy as a Cloudflare Worker
 tools/
   local-proxy.mjs           same proxy, runnable locally
   https-server.mjs          HTTPS dev server, for testing secure-origin behaviour

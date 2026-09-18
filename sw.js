@@ -57,6 +57,9 @@ self.addEventListener('activate', (event) => {
 
 /** Anything that looks like a live stream must always hit the network. */
 function isStreamRequest(url) {
+  // The bundled proxy reassembles stream URLs into its query string, so its
+  // responses are live media too — never cache or intercept them.
+  if (url.pathname.startsWith('/api/')) return true;
   return /\.m3u8(\?|$)/i.test(url.pathname) ||
          /\.ts(\?|$)/i.test(url.pathname) ||
          /\.m4s(\?|$)/i.test(url.pathname) ||

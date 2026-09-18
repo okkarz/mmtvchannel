@@ -71,6 +71,7 @@
     settingsSheet: $('#settingsSheet'),
     settingsClose: $('#settingsClose'),
     proxyInput: $('#proxyInput'),
+    builtinProxyNote: $('#builtinProxyNote'),
     autoProxyInput: $('#autoProxyInput'),
     autoplayInput: $('#autoplayInput'),
     bigFocusInput: $('#bigFocusInput'),
@@ -166,6 +167,7 @@
     levels: [],
     viaProxy: false,
     forceProxyFor: null,   // channel id that should always go through the proxy
+    builtinProxy: '',      // same-origin /api/proxy, detected on boot when deployed on Vercel
     overlay: null,
     lastHomeFocus: null,
     watchdog: null,
@@ -378,7 +380,7 @@
     setSpinner(false);
     dom.errTitle.textContent = title;
     dom.errMsg.textContent = msg;
-    dom.proxyBtn.hidden = !(options && options.proxy && !!prefs.proxyUrl);
+    dom.proxyBtn.hidden = !(options && options.proxy && !!effectiveProxy());
     dom.errbox.hidden = false;
     // Only pull focus when the player is actually on screen — an error from a
     // background timeout must never yank focus away from the channel grid.
@@ -390,17 +392,28 @@
   function hideError() { dom.errbox.hidden = true; }
 
   /**
+   * Which proxy should be used, if any?
+   *   • an explicitly configured URL always wins — it is the user's choice
+   *   • otherwise fall back to the built-in `/api/proxy` when this deployment
+   *     ships one (Vercel), so blocked channels work with zero setup
+   */
+  function effectiveProxy() {
+    return prefs.proxyUrl || state.builtinProxy || '';
+  }
+
+  /**
    * Resolve the URL to request.
    *   proxy=false → the broadcaster's own URL
-   *   proxy=true  → routed through the user's CORS proxy. Needed by hosts that
-   *                 send no CORS headers, and required for plain-HTTP streams
-   *                 loaded from an HTTPS page (mixed content).
+   *   proxy=true  → routed through a proxy. Needed by hosts that send no CORS
+   *                 headers, enforce a Referer allow-list, or are plain HTTP
+   *                 (blocked as mixed content on an HTTPS page).
    */
   function resolveUrl(channel, proxy) {
-    if (!proxy || !prefs.proxyUrl) return { url: channel.url, proxied: false };
-    const base = prefs.proxyUrl.replace(/\/+$/, '');
-    const sep = base.includes('?') ? '&' : '?';
-    return { url: `${base}${sep}url=${encodeURIComponent(channel.url)}`, proxied: true };
+    const base = effectiveProxy();
+    if (!proxy || !base) return { url: channel.url, proxied: false };
+    const trimmed = base.replace(/\/+$/, '');
+    const sep = trimmed.includes('?') ? '&' : '?';
+    return { url: `${trimmed}${sep}url=${encodeURIComponent(channel.url)}`, proxied: true };
   }
 
   /**
@@ -424,14 +437,15 @@
 
     const wantsProxy = state.forceProxyFor === channel.id ||
       (!!channel.needsProxy && !!prefs.autoProxy);
-    const target = resolveUrl(channel, !!(prefs.proxyUrl && wantsProxy));
+    const target = resolveUrl(channel, !!(effectiveProxy() && wantsProxy));
 
     // Refuse up front rather than letting the request fail invisibly.
     if (isMixedContent(target.url)) {
       state.viaProxy = false;
       setStatus('');
       showError('This channel needs the proxy',
-        `${channel.name} only broadcasts over plain HTTP, which browsers block on a secure (HTTPS) page. Add your CORS proxy URL in Settings — the proxy fetches the stream server-side and serves it securely.`,
+        `${channel.name} only broadcasts over plain HTTP, which browsers block on a secure (HTTPS) page. ` +
+        'Deploy the included proxy (see README) and set it in Settings — the proxy fetches the stream server-side and serves it securely.',
         { proxy: true });
       return;
     }
@@ -527,7 +541,7 @@
 
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
       // Usually CORS, mixed content, or a dead host — retry once via the proxy.
-      if (!state.viaProxy && prefs.proxyUrl) {
+      if (!state.viaProxy && effectiveProxy()) {
         const target = resolveUrl(channel, true);
         state.viaProxy = target.proxied;
         setStatus('Retrying via proxy…');
@@ -666,6 +680,7 @@
     if (which === 'drawer') dom.drawer.hidden = false;
     if (which === 'settings') {
       dom.proxyInput.value = prefs.proxyUrl || '';
+      dom.builtinProxyNote.hidden = !state.builtinProxy;
       dom.autoProxyInput.checked = !!prefs.autoProxy;
       dom.autoplayInput.checked = !!prefs.autoplay;
       dom.bigFocusInput.checked = !!prefs.bigFocus;
@@ -883,7 +898,7 @@
   dom.retryBtn.addEventListener('click', () => { if (state.current) startPlayback(state.current, true); });
   dom.proxyBtn.addEventListener('click', () => {
     if (!state.current) return;
-    if (!prefs.proxyUrl) { toast('Add a proxy URL in Settings first'); openOverlay('settings'); return; }
+    if (!effectiveProxy()) { toast('Add a proxy URL in Settings first'); openOverlay('settings'); return; }
     state.forceProxyFor = state.current.id;
     hideError();
     startPlayback(state.current, true);
@@ -1088,6 +1103,38 @@
   window.addEventListener('offline', () => toast('You are offline'));
 
   /* ══════════════════════════════════════════════════════════════════════════
+     BUILT-IN PROXY DETECTION
+     When this app is deployed somewhere that ships `/api/proxy` (the Vercel
+     function, or the included serverless handler), blocked channels work with
+     no configuration. On a plain static host the probe fails and we quietly
+     fall back to whatever the user configured.
+     ══════════════════════════════════════════════════════════════════════════ */
+
+  async function detectBuiltinProxy() {
+    if (!location.protocol.startsWith('http')) return;
+    const endpoint = new URL('api/proxy', document.baseURI).href;
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+      clearTimeout(timer);
+      if (!response.ok) return;
+      const type = response.headers.get('content-type') || '';
+      // A static host would answer with index.html here; require our JSON shape.
+      if (!type.includes('application/json')) return;
+      const body = await response.json();
+      if (body && body.service === 'mmtv-proxy' && body.ok) {
+        state.builtinProxy = endpoint;
+      }
+    } catch { /* no built-in proxy available — that is fine */ }
+  }
+
+  /* ══════════════════════════════════════════════════════════════════════════
      BOOT
      ══════════════════════════════════════════════════════════════════════════ */
 
@@ -1097,6 +1144,14 @@
   renderGrid();
   if (!location.hash) location.replace(location.pathname + '#/');
   route();
+
+  // Probe in the background so it never delays first paint.
+  detectBuiltinProxy().then(() => {
+    if (state.builtinProxy && !prefs.proxyUrl) {
+      // Re-render so cards know a proxy is available, and refresh the sheet.
+      renderGrid();
+    }
+  });
 
   /* Small debug surface for the browser console. */
   window.__mmtv = { state, prefs, CHANNELS, showPlayer, openChannel, isMixedContent };
