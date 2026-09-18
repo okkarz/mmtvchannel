@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Logo normalizer</title>
+<style>
+  body { background: #111; color: #eee; font: 14px/1.5 ui-sans-serif, system-ui; padding: 24px; }
+  #log { white-space: pre-wrap; font-family: ui-monospace, monospace; font-size: 12px; }
+  .row { display: flex; gap: 12px; align-items: center; margin: 6px 0; }
+  .box { width: 120px; height: 70px; background: #fff; border-radius: 6px; display: grid; place-items: center; }
+  .box img { max-width: 92%; max-height: 82%; }
+</style>
+</head>
+<body>
+<h1>Logo normalizer</h1>
+<p>Trims uniform borders, then writes a max-512px PNG back to <code>assets/logos/</code>.</p>
+<div id="rows"></div>
+<pre id="log"></pre>
+<script>
+// [ output key → assets/logos/<key>.png , source path ]
+// Sources come from tools/originals/, which holds the pristine downloads, so
+// running this again always re-derives a clean logo instead of re-trimming an
+// already-trimmed file.
+const LOGOS = [
+  ['mrtv',     '/tools/originals/mrtv.png'],
+  ['mrtvnews', '/tools/originals/mrtvnews.png'],
+  ['hluttaw',  '/tools/originals/hluttaw.png'],
+  ['mrtv-ent', '/tools/originals/mrtv-ent.png'],
+  ['mahar',    '/tools/originals/mahar.png'],
+  ['dvb',      '/tools/originals/dvb.png'],
+  ['mrtv4',    '/tools/originals/mrtv4.png'],
+  ['fortune',  '/tools/originals/fortune-tv.png'],
+  ['mrtv-sports', '/tools/originals/mrtv-sports.png'],
+  ['mrtv-farmer', '/tools/originals/mrtv-farmer.png'],
+  ['mrtv-nrc',    '/tools/originals/mrtv-nrc.png'],
+  ['mitv',        '/tools/originals/mitv.png'],
+  ['maharbawdi',  '/tools/originals/maharbawdi.jpg'],
+  ['mahar-esports', '/tools/originals/mahar-esports.png'],
+  ['channel7',      '/tools/originals/channel7.png'],
+];
+const log = (m) => { document.getElementById('log').textContent += m + '\n'; };
+
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.crossOrigin = 'anonymous';
+    i.onload = () => res(i);
+    i.onerror = rej;
+    i.src = src;
+  });
+}
+
+// Is this pixel "background-like"? Compare to corner reference within tolerance,
+// and also treat near-white as background (logos are commonly flattened on white).
+function isBg(r, g, b, a, ref, tol) {
+  if (a < 12) return true;
+  const d = Math.max(Math.abs(r - ref[0]), Math.abs(g - ref[1]), Math.abs(b - ref[2]));
+  if (d <= tol) return true;
+  if (r > 246 && g > 246 && b > 246) return true;
+  return false;
+}
+
+function trim(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const { width: w, height: h } = c;
+  const data = ctx.getImageData(0, 0, w, h).data;
+
+  // Reference = average of the four corner pixels
+  const corners = [[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]];
+  let rr = 0, gg = 0, bb = 0;
+  for (const [x, y] of corners) {
+    const i = (y * w + x) * 4;
+    rr += data[i]; gg += data[i + 1]; bb += data[i + 2];
+  }
+  const ref = [rr / 4, gg / 4, bb / 4];
+  const tol = 10;
+
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (!isBg(data[i], data[i + 1], data[i + 2], data[i + 3], ref, tol)) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < 0) return { canvas: c, box: [0, 0, w, h], trimmed: false };
+
+  const pad = Math.round(Math.max(w, h) * 0.015) + 2;
+  minX = Math.max(0, minX - pad); minY = Math.max(0, minY - pad);
+  maxX = Math.min(w - 1, maxX + pad); maxY = Math.min(h - 1, maxY + pad);
+
+  const cw = maxX - minX + 1, ch = maxY - minY + 1;
+
+  // Safety net: the "near-white is background" rule can chew into logos that
+  // are genuinely pale. If trimming removed most of the artwork, keep the
+  // original frame instead of shipping a mutilated logo.
+  if (cw * ch < w * h * 0.25) {
+    return { canvas: c, box: [0, 0, w, h], trimmed: false, note: 'trim looked lossy — kept original' };
+  }
+
+  const MAX = 512;
+  const scale = Math.min(1, MAX / Math.max(cw, ch));
+  const ow = Math.max(1, Math.round(cw * scale));
+  const oh = Math.max(1, Math.round(ch * scale));
+
+  const out = document.createElement('canvas');
+  out.width = ow; out.height = oh;
+  const octx = out.getContext('2d');
+  octx.imageSmoothingQuality = 'high';
+  octx.drawImage(c, minX, minY, cw, ch, 0, 0, ow, oh);
+  return { canvas: out, box: [minX, minY, cw, ch], trimmed: true, size: [ow, oh] };
+}
+
+(async () => {
+  const rows = document.getElementById('rows');
+  for (const [key, src] of LOGOS) {
+    try {
+      const img = await loadImage(src + '?v=' + Date.now());
+      const { canvas, box, trimmed, size, note } = trim(img);
+      const dataUrl = canvas.toDataURL('image/png');
+      const row = document.createElement('div');
+      row.className = 'row';
+      const box1 = document.createElement('div');
+      box1.className = 'box';
+      const im = document.createElement('img');
+      im.src = dataUrl;
+      box1.appendChild(im);
+      const span = document.createElement('span');
+      span.textContent = `${key}: ${img.naturalWidth}x${img.naturalHeight} -> ${trimmed ? size.join('x') : 'untrimmed'} (box ${box.join(',')})${note ? ' — ' + note : ''}`;
+      row.append(box1, span);
+      rows.appendChild(row);
+
+      const r = await fetch('/save?name=' + key + '.png', { method: 'POST', body: dataUrl });
+      log(`${key}: ${r.status} ${r.statusText}`);
+    } catch (e) {
+      log(`${key}: FAILED ${e}`);
+    }
+  }
+  log('DONE');
+  document.title = 'DONE';
+})();
+</script>
+</body>
+</html>

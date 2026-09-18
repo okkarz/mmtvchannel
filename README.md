@@ -1,0 +1,244 @@
+# Myanmar TV 📺
+
+A fast, installable **PWA** for watching Myanmar live TV channels. Designed
+mobile-first, but built just as much for the couch: the whole interface is
+drivable with a TV remote's D-pad.
+
+No build step, no framework, no npm install. Plain HTML, CSS and JavaScript with
+a locally vendored `hls.js`, so it works offline once installed.
+
+```
+┌─ Home ─────────────────────────────┐   ┌─ Player ──────────────────────────┐
+│  search · category chips · grid    │ → │  full-bleed HLS video + overlay   │
+│  "continue watching" rail          │ ← │  channel drawer · quality · PiP   │
+└────────────────────────────────────┘   └───────────────────────────────────┘
+```
+
+---
+
+## Quick start
+
+```bash
+# any static server works
+python3 -m http.server 8080
+# → http://localhost:8080
+```
+
+> Open it over `http://localhost` (not `file://`) — service workers and most
+> stream hosts require a real origin.
+
+---
+
+## ⚠️ Read this first: the CORS proxy
+
+**Some channels will not play until you set up the proxy.** This is not a bug in
+the app — several Myanmar broadcasters actively block browser playback:
+
+| Host | What it does | Needs proxy |
+|---|---|---|
+| `mrtvott.com` | returns `403` to browser requests | **yes** |
+| `ygncdn.com` | media segments return `403` unless the `Referer` is ygncdn's own origin | **yes** |
+| `rtmptv.fortunebb.net:8282` | **plain HTTP only** (no TLS on 8282 or 443) + no CORS → blocked as mixed content | **yes** |
+| `live.pyoneplay.com` | CORS `*`, any referrer accepted (MRTV-4, Channel 7) | no |
+| `live-stream.dvb.no` | sends `Access-Control-Allow-Origin: *` | no |
+| `pplive.comquas.com` | sends `Access-Control-Allow-Origin: *` | no |
+
+A web page cannot set its own `Referer` or bypass mixed-content rules, so the fix
+is a one-hop server-side proxy.
+
+Plain-HTTP channels are detected *before* a request is made, so on an HTTPS
+deployment you get an accurate "this channel needs the proxy" explanation rather
+than an opaque network error.
+
+### Deploy it (free, ~1 minute)
+
+1. Go to <https://dash.cloudflare.com> → **Workers & Pages** → **Create** → **Worker**
+2. Paste the contents of [`proxy/worker.js`](proxy/worker.js) → **Deploy**
+3. In the app: **Settings → CORS proxy URL** → paste your `https://….workers.dev` URL
+
+That's it. With *"Automatically use the proxy for channels that need it"* on
+(default), only the channels that require it are routed through the proxy.
+
+The worker also **rewrites HLS playlists** so that every nested URI — segments,
+encryption keys, `EXT-X-MAP` init files, alternate renditions — is proxied too.
+Without that rewriting, relative URIs would resolve against the proxy host and 404.
+
+### Try the proxy locally first
+
+```bash
+node tools/local-proxy.mjs          # http://localhost:8098
+```
+Then set the proxy URL in Settings to `http://localhost:8098`.
+
+---
+
+## Channels
+
+15 channels across 5 categories. Every stream was probed on 2026-09-18.
+
+| Channel | Category | Source | Proxy | Logo |
+|---|---|---|---|---|
+| MRTV HD | General | mrtvott.com | yes | Wikimedia Commons |
+| MRTV News | News | mrtvott.com | yes | Wikimedia Commons |
+| MRTV Sports | Sports | mrtvott.com | yes | broadcaster |
+| MRTV Farmer | Knowledge | mrtvott.com | yes | broadcaster |
+| MRTV NRC | General | mrtvott.com | yes | broadcaster |
+| MRTV Entertainment | Entertainment | mrtvott.com | yes | en.wikipedia.org |
+| Hluttaw | News | mrtvott.com | yes | shanstate.hluttaw.mm |
+| MITV | News | mrtvott.com | yes | en.wikipedia.org |
+| Mahar HD | General | ygncdn.com | yes | Wikimedia Commons |
+| Mahar Esports | Sports | ygncdn.com | yes | broadcaster |
+| Maharbawdi | Entertainment | pplive.comquas.com | no | YouTube channel |
+| DVB TV | News | live-stream.dvb.no | no | dvb.no |
+| MRTV-4 | Entertainment | live.pyoneplay.com | no | Wikimedia Commons |
+| Fortune TV | Entertainment | rtmptv.fortunebb.net | yes | broadcaster |
+| Channel 7 | Entertainment | live.pyoneplay.com | no | en.wikipedia.org |
+
+Every channel now ships a real logo — none rely on the coloured monogram fallback
+(which remains in place if a logo ever fails to load).
+
+### Adding or changing channels
+
+Edit [`data/channels.js`](data/channels.js):
+
+```js
+{
+  id: 'my-channel',            // used in the URL: #/watch/my-channel
+  name: 'My Channel',          // shown on the card
+  short: 'MC',
+  full: 'My Channel Entertainment',
+  category: 'Entertainment',   // must exist in window.CATEGORIES
+  language: 'Burmese',
+  logo: 'assets/logos/my.png', // or null → monogram tile
+  url: 'https://example.com/live/master.m3u8',
+  needsProxy: false,
+  quality: 'HD',
+  color: '#7C3AED',            // monogram colours + accents
+}
+```
+
+---
+
+## TV & remote control
+
+The grid uses **spatial navigation**: an arrow press always lands on the nearest
+tile in that direction, preferring elements that overlap on the other axis. Focus
+rings are deliberately large, and Home/Back always returns you to where you were.
+
+| Remote / key | Action |
+|---|---|
+| ▲ ▼ ◀ ▶ | move the highlight |
+| OK / Enter | open the highlighted channel |
+| Back / Esc | back to the grid (closes overlays first) |
+| Space | play / pause |
+| M · F · C · Q | mute · fullscreen · channel list · quality |
+| / · ? | search · shortcuts |
+
+Back-key codes from webOS (`461`), Tizen (`10009`) and Orsay (`10033`) remotes are
+handled, alongside `Backspace` and `Escape`.
+
+Layout adapts from 2 columns on a phone to 6 on a 1080p TV, with larger type,
+bigger hit targets and overscan-safe padding beyond 1500 px.
+
+---
+
+## Install as an app
+
+The app ships a manifest and a service worker, so it can be installed to the home
+screen / desktop and launched fullscreen. The shell (HTML, CSS, JS, `hls.js`,
+logos, font) is precached; **live streams are never cached** — the service worker
+explicitly skips `.m3u8`, `.ts`, `.m4s`, range requests and proxied traffic.
+
+### Deploying
+
+Any static host works — the whole app is the repo root.
+
+```bash
+# Vercel
+vercel --prod
+
+# Netlify
+netlify deploy --prod --dir .
+
+# GitHub Pages: push, then Settings → Pages → branch main, folder / (root)
+```
+
+Set the proxy URL in **Settings** after deploying (preferences are per-device,
+stored in `localStorage`).
+
+---
+
+## Project layout
+
+```
+index.html                  app shell (home + player views, settings, help)
+styles.css                  design tokens, layout, TV/D-pad focus styling
+app.js                      routing, player, spatial navigation, prefs, PWA
+data/channels.js            the channel catalogue
+manifest.webmanifest        PWA manifest + shortcuts
+sw.js                       app-shell cache (never caches video)
+vendor/hls.min.js           hls.js, vendored for offline use
+assets/
+  fonts/inter-variable.woff2
+  icons/                    SVG source + 192/512/maskable PNGs
+  logos/                    channel logos (trimmed + resized)
+proxy/worker.js             Cloudflare Worker CORS proxy  ← deploy this
+tools/
+  local-proxy.mjs           same proxy, runnable locally
+  https-server.mjs          HTTPS dev server, for testing secure-origin behaviour
+  certs/                    self-signed dev cert (git-ignored — generate your own)
+  normalize.html            logo trim/resize helper (canvas based)
+  normalize-server.mjs      dev server for the helper
+  originals/                untouched logo downloads used as normalizer input
+```
+
+---
+
+## How it works
+
+**Playback.** `hls.js` with low-latency tuning and a live-sync window of 3
+fragments. Safari and iOS use native HLS instead. A watchdog reloads the stream
+if `currentTime` stops advancing for ~15 s, and a 20 s start-up timer catches
+streams that hand over a playlist but never deliver a frame — so you get a real
+error with a Retry button instead of an endless spinner.
+
+**Proxy fallback.** Channels marked `needsProxy` go through the proxy immediately.
+For everything else the app tries the broadcaster directly, and on a fatal network
+error automatically retries once through the proxy before showing an error.
+
+**Focus.** Focus is moved with `element.focus()`, so screen readers and native
+button activation keep working. Arrow keys inside a text field still move the
+caret — horizontal arrows only escape once the caret reaches the text edge, while
+vertical arrows always leave the field (there is no other way out on a remote).
+
+**Accessibility.** Full keyboard operation, a skip link, `aria-label`s on all
+icon-only buttons, an `aria-live` status region, visible focus rings, and support
+for `prefers-reduced-motion` and `prefers-contrast: more`.
+
+---
+
+## Known limitations
+
+- **Logos are hand-curated** and several came from small, watermarked or
+  low-resolution sources (the ME mark carries a third-party watermark). Replace
+  them with clean brand assets when available and re-run the normalizer.
+- **5 Plus** and other token-gated channels from `myanmartvchannels.com` cannot be
+  included: their URLs carry a signed token that expires after 10 minutes, and the
+  site sits behind a Cloudflare bot challenge.
+- Streams are third-party links that change or go down without notice. If a channel
+  stops working, re-probe its URL and update `data/channels.js`.
+- Free proxies can be slow for HD. The included Cloudflare Worker adds one hop and
+  is usually fine, but it is not a CDN.
+
+---
+
+## Credits
+
+Channel logos are the property of their respective broadcasters and are used for
+identification only: MRTV, MRTV News, MRTV-4 and Mahar via Wikimedia Commons;
+MRTV Entertainment (ME), MITV, Channel 7 and the MRTV Sports / Farmer / NRC marks
+via the broadcasters' own published artwork; Hluttaw via shanstate.hluttaw.mm;
+DVB via dvb.no; Fortune via fortunebb.net; Maharbawdi via its YouTube channel.
+Typeface is
+[Inter](https://rsms.me/inter/) (SIL Open Font License). Video playback by
+[hls.js](https://github.com/video-dev/hls.js) (Apache-2.0).

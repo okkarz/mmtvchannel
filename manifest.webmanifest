@@ -1,0 +1,47 @@
+{
+  "name": "Myanmar TV — Live Channels",
+  "short_name": "Myanmar TV",
+  "description": "Watch Myanmar live TV channels. Fast, simple, and built for both phones and TV remotes.",
+  "id": "/",
+  "start_url": "./index.html#/",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["fullscreen", "standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#0B0B18",
+  "theme_color": "#0B0B18",
+  "categories": ["entertainment", "video", "news"],
+  "lang": "en",
+  "dir": "ltr",
+  "icons": [
+    {
+      "src": "assets/icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    { "name": "MRTV HD", "url": "./index.html#/watch/mrtv-hd" },
+    { "name": "DVB TV", "url": "./index.html#/watch/dvb" },
+    { "name": "MRTV-4", "url": "./index.html#/watch/mrtv4" }
+  ]
+}

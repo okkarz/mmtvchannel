@@ -1,0 +1,24 @@
+# ---------------------------------------------------------------------------
+# Dev-only artefacts — never commit these
+# ---------------------------------------------------------------------------
+
+# Local HTTPS dev certificate + private key (generate your own; see README)
+tools/certs/
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# Node (the app itself needs no dependencies, but tools may create these)
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Local logs / scratch
+*.log
