@@ -1,10 +1,13 @@
 /* ============================================================================
    Service worker — app shell cache.
+   • Code (HTML/JS/CSS) is network-first, so a deploy always reaches the viewer.
+     Serving it cache-first previously broke the app: the HTML updated while
+     app.js came from the cache, and the two disagreed. Offline playback is not
+     a meaningful loss for live TV, so freshness wins.
+   • Media (logos, fonts, hls.js) is cache-first — that content is stable.
    • Never caches video segments or playlists (live streams must stay live).
-   • Optional: when a CORS proxy is configured, requests to that origin are
-     passed through untouched so the proxy can add its own CORS headers.
    ========================================================================= */
-const VERSION = 'mmtv-v1.0.5';
+const VERSION = 'mmtv-v1.1.0';
 const SHELL = `${VERSION}-shell`;
 
 /** Everything needed to boot the UI offline. */
@@ -68,6 +71,20 @@ function isStreamRequest(url) {
          /wmsAuthSign|nimblesessionid|LiveApp|playlist\.m3u8|chunks\.m3u8/i.test(url.href);
 }
 
+/**
+ * Is this part of the *code* (as opposed to media)?
+ *
+ * Code must always be fetched fresh. Serving it cache-first caused a real
+ * breakage: the HTML updated but `app.js` came from the cache, so the new
+ * markup and the old script disagreed and the app threw on load. Offline
+ * playback is not a meaningful loss for live TV, so freshness wins.
+ */
+function isShellCode(url) {
+  return /\.(?:html|js|mjs|css|json|webmanifest)$/i.test(url.pathname) ||
+         url.pathname === '/' ||
+         url.pathname.endsWith('/index.html');
+}
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   if (request.method !== 'GET') return;
@@ -78,36 +95,34 @@ self.addEventListener('fetch', (event) => {
   // Streams, proxied traffic and range requests bypass the cache entirely.
   if (isStreamRequest(url) || request.headers.has('range')) return;
 
-  // Navigation: serve the cached shell instantly, refresh in the background.
-  if (request.mode === 'navigate') {
+  /* ── Code: network first, fall back to cache when offline ─────────────── */
+  if (request.mode === 'navigate' || (url.origin === self.location.origin && isShellCode(url))) {
     event.respondWith((async () => {
       try {
         const fresh = await fetch(request);
-        const cache = await caches.open(SHELL);
-        cache.put('./index.html', fresh.clone());
+        if (fresh && fresh.ok && fresh.type !== 'opaqueredirect') {
+          const cache = await caches.open(SHELL);
+          cache.put(request, fresh.clone());
+          return fresh;
+        }
         return fresh;
       } catch {
+        // Offline — serve whatever was last cached, else the shell.
         const cache = await caches.open(SHELL);
-        return (await cache.match('./index.html')) || Response.error();
+        return (await cache.match(request)) ||
+               (await cache.match('./index.html')) ||
+               Response.error();
       }
     })());
     return;
   }
 
-  // Same-origin assets: cache-first, then revalidate.
+  /* ── Media (logos, fonts, vendored libs): cache first ─────────────────── */
   if (url.origin === self.location.origin) {
     event.respondWith((async () => {
       const cache = await caches.open(SHELL);
       const hit = await cache.match(request, { ignoreSearch: false });
-      if (hit) {
-        event.waitUntil((async () => {
-          try {
-            const fresh = await fetch(request);
-            if (fresh && fresh.ok) await cache.put(request, fresh.clone());
-          } catch { /* offline */ }
-        })());
-        return hit;
-      }
+      if (hit) return hit;
       try {
         const fresh = await fetch(request);
         if (fresh && fresh.ok) await cache.put(request, fresh.clone());
