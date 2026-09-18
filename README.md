@@ -236,6 +236,7 @@ tools/
   certs/                    self-signed dev cert (git-ignored — generate your own)
   normalize.html            logo trim/resize helper (canvas based)
   normalize-server.mjs      dev server for the helper
+  diagnostics.html          measures startup time and true rendition bitrates
   originals/                untouched logo downloads used as normalizer input
 ```
 
@@ -243,11 +244,64 @@ tools/
 
 ## How it works
 
-**Playback.** `hls.js` with low-latency tuning and a live-sync window of 3
-fragments. Safari and iOS use native HLS instead. A watchdog reloads the stream
-if `currentTime` stops advancing for ~15 s, and a 20 s start-up timer catches
-streams that hand over a playlist but never deliver a frame — so you get a real
-error with a Retry button instead of an endless spinner.
+**Playback.** `hls.js` tuned for live television rather than VOD. Safari and iOS
+use native HLS instead. A watchdog reloads the stream if `currentTime` stops
+advancing for ~6 s, and a 20 s start-up timer catches streams that hand over a
+playlist but never deliver a frame — so you get a real error with a Retry button
+instead of an endless spinner.
+
+### Tuning for live streams
+
+Startup time on a live channel is dominated by how much video has to download
+before playback can begin: *(segments behind the live edge) × (segment size)*.
+Those numbers vary enormously between these broadcasters:
+
+| Stream | Segment length | Segment size |
+|---|---|---|
+| Mahar | 4 s | 0.5–1.8 MB |
+| Fortune TV | 6.5 s | 2.3 MB |
+| MRTV-4, Channel 7 | 6 s | 0.5 MB |
+| DVB | **10–18 s** | 0.8 MB |
+
+A count-based live target of 3 fragments therefore meant very different delays
+per channel — 12 s of video on Mahar but **31 s on DVB**. The target is now set
+in **seconds** (`liveSyncDuration: 10`), which normalises it, and DVB starts
+three times closer to live as a result. Note that `hls.js` refuses to mix the
+count-based and time-based families, so only one may be set.
+
+Other changes for slow or unstable connections:
+
+- **`abrMaxWithRealBitrate`** — see the warning below.
+- **Smaller buffer** (`maxBufferLength: 16`) — less to refill after a dropout.
+- **ABR biased to stability** — drops a rendition sooner when throughput falls,
+  climbs back more cautiously, so it stops oscillating between tiers.
+- **Fast retries** (300 ms) — a dropped packet recovers long before it is visible.
+- **A recovery ladder** for fatal network errors, cheapest first: restart the
+  loader (keeps the buffered video) → step down a rendition → switch to the
+  proxy → full restart. Previously every fatal error meant a full teardown.
+
+Run `tools/diagnostics.html` to measure this on your own connection; it reports
+per-channel startup time and compares advertised bitrates against what the
+streams actually serve.
+
+### ⚠️ Broadcasters misreport their qualities
+
+**ABR is only as good as the bitrates a broadcaster declares — and some lie.**
+Fortune TV's master playlist advertises:
+
+| Playlist claims | Actually serves |
+|---|---|
+| `1080p @ 2 Mbps` | **1280×720 @ 3.00 Mbps** |
+| `480p @ 1 Mbps` | **1280×720 @ 2.99 Mbps** |
+
+Both renditions are the same 720p encode at the same bitrate, and both are 50%
+*higher* than declared. Left alone, `hls.js` believes 2 Mbps covers that level
+and stalls on connections that cannot hold 3 Mbps, while "switching quality"
+changes nothing. `abrMaxWithRealBitrate: true` makes the ABR use measured
+throughput instead of the claim, which is what fixes it.
+
+Mahar, by contrast, is honest — 1080p/720p/360p really do differ ~4× — so
+quality switching genuinely helps there.
 
 **Proxy fallback.** Channels marked `needsProxy` go through the proxy immediately.
 For everything else the app tries the broadcaster directly, and on a fatal network

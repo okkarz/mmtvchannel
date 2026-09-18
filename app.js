@@ -175,6 +175,7 @@
     stallCount: 0,
     lastTime: 0,
     recoverCount: 0,
+    networkRetries: 0,
     startTimer: null,
   };
 
@@ -368,9 +369,22 @@
     requestAnimationFrame(() => dom.backBtn.focus({ preventScroll: true }));
   }
 
-  function setStatus(text) {
+  /**
+   * Status chip text.
+   *   persistent (default) — stays until replaced, e.g. "Via proxy"
+   *   transient            — clears itself, e.g. "Switching to 360p…"
+   */
+  let statusTimer;
+  function setStatus(text, transient) {
+    clearTimeout(statusTimer);
     dom.statusChip.hidden = !text;
     dom.statusChip.textContent = text || '';
+    if (text && transient) {
+      statusTimer = setTimeout(() => {
+        dom.statusChip.hidden = true;
+        dom.statusChip.textContent = '';
+      }, 2500);
+    }
   }
 
   function setSpinner(on, text) {
@@ -457,10 +471,80 @@
     playUrl(target.url, channel, !!force);
   }
 
+  /**
+   * hls.js tuning, aimed at three things: start fast, recover fast, and change
+   * quality smoothly. The values are informed by measuring these streams:
+   *
+   *   segments are 4s (Mahar) to 10-18s (DVB)
+   *   segment sizes are 0.4 MB (Mahar 360p) to 2.3 MB (Fortune)
+   *
+   * A count-based live sync of 3 therefore meant very different pre-roll per
+   * channel — 12s of video on Mahar but 31s on DVB — so the target is set in
+   * seconds and normalised across all of them.
+   */
+  const HLS_CONFIG = {
+    enableWorker: true,
+
+    // ── Start playing sooner ────────────────────────────────────────────────
+    // Open on a light rendition and let ABR climb. A high starting estimate
+    // makes the first fragment big, which is what makes a live channel feel
+    // slow to open.
+    abrEwmaDefaultEstimate: 600000,   // ~600 kbps
+    startLevel: -1,                   // let ABR choose using that estimate
+
+    // ── Sit closer to the live edge ─────────────────────────────────────────
+    // A time-based target so every channel lands at a similar wall-clock delay.
+    // hls.js refuses to mix the time-based and count-based families, so only
+    // these two are set — adding liveSyncDurationCount here throws at startup.
+    liveSyncDuration: 10,
+    liveMaxLatencyDuration: 30,
+    // If playback drifts behind, catch up gently rather than seeking (seeking
+    // on a live stream causes a visible jump and another buffering pause).
+    maxLiveSyncPlaybackRate: 1.5,
+
+    // ── Buffer ──────────────────────────────────────────────────────────────
+    // Live needs far less look-ahead than VOD; a smaller target means less to
+    // refill after a dropout, so recovery is quicker.
+    maxBufferLength: 16,
+    maxMaxBufferLength: 40,
+    backBufferLength: 15,
+    maxBufferSize: 40 * 1000 * 1000,
+
+    // ── ABR: drop quickly, climb back cautiously ────────────────────────────
+    // Several broadcasters mislabel their master playlist. Fortune TV advertises
+    // 720p tiers as "1080p @ 2 Mbps" and "480p @ 1 Mbps" while serving the same
+    // 3 Mbps encode for both — so trust measured throughput, not declarations.
+    abrMaxWithRealBitrate: true,
+    abrBandWidthFactor: 0.8,    // down-switch sooner when bandwidth dips
+    abrBandWidthUpFactor: 0.6,  // climb back more cautiously → less oscillation
+    abrEwmaFastLive: 3,
+    abrEwmaSlowLive: 9,
+
+    // ── Recover from stalls without a full restart ──────────────────────────
+    highBufferWatchdogPeriod: 2,
+    nudgeOffset: 0.2,
+    nudgeMaxRetry: 5,
+
+    // ── Fail fast, retry hard ───────────────────────────────────────────────
+    // Retrying within a few hundred ms recovers from a dropped packet long
+    // before the viewer notices; the old 800ms delays made every hiccup visible.
+    manifestLoadingTimeOut: 8000,
+    manifestLoadingMaxRetry: 4,
+    manifestLoadingRetryDelay: 300,
+    levelLoadingTimeOut: 8000,
+    levelLoadingMaxRetry: 4,
+    levelLoadingRetryDelay: 300,
+    fragLoadingTimeOut: 12000,
+    fragLoadingMaxRetry: 6,
+    fragLoadingRetryDelay: 300,
+    appendErrorMaxRetry: 5,
+  };
+
   function playUrl(url, channel, force) {
     const video = dom.video;
     setSpinner(true, 'Connecting…');
     state.recoverCount = 0;
+    state.networkRetries = 0;
 
     if (state.hls) { try { state.hls.destroy(); } catch { /* noop */ } state.hls = null; }
     state.levels = [];
@@ -469,23 +553,27 @@
     const nativeHls = !!video.canPlayType('application/vnd.apple.mpegurl');
 
     if (canHlsJs) {
-      const hls = new window.Hls({
-        enableWorker: true,
-        lowLatencyMode: true,
-        backBufferLength: 30,
-        liveSyncDurationCount: 3,
-        manifestLoadingMaxRetry: 3,
-        manifestLoadingRetryDelay: 800,
-        levelLoadingMaxRetry: 4,
-        fragLoadingMaxRetry: 6,
-        fragLoadingRetryDelay: 800,
-      });
+      // Construct defensively: a rejected config throws here, and an uncaught
+      // throw would leave the player spinning forever with no explanation.
+      let hls;
+      try {
+        hls = new window.Hls(HLS_CONFIG);
+      } catch (error) {
+        showError('Player configuration error',
+          `The video engine rejected its settings: ${error && error.message ? error.message : error}`);
+        return;
+      }
       state.hls = hls;
       hls.on(window.Hls.Events.MANIFEST_PARSED, (_event, data) => {
         state.levels = data.levels || [];
         renderQuality();
       });
       hls.on(window.Hls.Events.LEVEL_SWITCHED, renderQuality);
+      // Report quality changes so a visible dip explains itself.
+      hls.on(window.Hls.Events.LEVEL_SWITCHING, (_event, data) => {
+        const level = state.levels[data.level];
+        if (level && level.height) setStatus(`Switching to ${level.height}p…`, true);
+      });
       hls.on(window.Hls.Events.ERROR, (_event, data) => onHlsError(data, channel));
       hls.loadSource(url);
       hls.attachMedia(video);
@@ -536,21 +624,51 @@
 
     if (!data.fatal) {
       if (data.details && /bufferStalled|fragLoadError|levelLoadError/i.test(data.details)) {
-        setStatus('Reconnecting…');
+        setStatus('Reconnecting…', true);
       }
       return;
     }
 
     if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-      // Usually CORS, mixed content, or a dead host — retry once via the proxy.
+      // Recovery ladder, cheapest first. A full teardown costs a manifest fetch,
+      // a playlist fetch and a fresh fragment before the picture returns, so try
+      // to avoid it while a lighter option might still work.
+      state.networkRetries = (state.networkRetries || 0) + 1;
+
+      // 1. Restart the loader — keeps the media source and buffered video.
+      if (state.networkRetries === 1 && state.hls) {
+        try {
+          setStatus('Reconnecting…', true);
+          state.hls.startLoad(-1);
+          return;
+        } catch { /* fall through to the next rung */ }
+      }
+
+      // 2. Step down a rendition — a lighter stream may survive a weak link.
+      if (state.networkRetries === 2 && levelsDiffer()) {
+        stepDownOnTrouble();
+        setStatus('Switching quality…', true);
+        try { state.hls.startLoad(-1); return; } catch { /* fall through */ }
+      }
+
+      // 3. Route through the proxy — often what a broadcaster's CORS or referer
+      //    rule needs, and it also fixes mixed content.
       if (!state.viaProxy && effectiveProxy()) {
         const target = resolveUrl(channel, true);
         state.viaProxy = target.proxied;
-        setStatus('Retrying via proxy…');
+        setStatus('Retrying via proxy…', true);
         setSpinner(true, 'Retrying via proxy…');
-        setTimeout(() => playUrl(target.url, channel, true), 350);
+        setTimeout(() => playUrl(target.url, channel, true), 300);
         return;
       }
+
+      // 4. Full restart, which resets the ladder for the next attempt.
+      if (state.networkRetries <= 4) {
+        setStatus('Reconnecting…', true);
+        setTimeout(() => startPlayback(channel, true), 400);
+        return;
+      }
+
       showError('Cannot reach the stream',
         'The broadcaster refused the connection. The channel may be temporarily down, or it may need the CORS proxy.',
         { proxy: true });
@@ -561,7 +679,7 @@
       // Give hls.js a couple of self-healing attempts, then be honest with the user.
       if (state.recoverCount < 2) {
         state.recoverCount += 1;
-        setStatus('Recovering…');
+        setStatus('Recovering…', true);
         try { state.hls.recoverMediaError(); return; } catch { /* fall through */ }
       }
       showError('This channel will not play',
@@ -582,14 +700,17 @@
     clearInterval(state.watchdog);
     state.stallCount = 0;
     state.lastTime = dom.video.currentTime;
+    // 2s polls with 2 strikes: a stall is caught in ~6s instead of ~15s, which
+    // is the difference between "a brief hiccup" and "the channel froze".
     state.watchdog = setInterval(() => {
       if (dom.viewPlayer.hidden || !state.current || !dom.errbox.hidden) return;
       const video = dom.video;
       if (video.paused || video.readyState < 2) { state.lastTime = video.currentTime; return; }
       if (video.currentTime === state.lastTime) {
         state.stallCount += 1;
-        if (state.stallCount >= 3) {
+        if (state.stallCount >= 2) {
           state.stallCount = 0;
+          if (recoverStalledPlayback()) return;
           setStatus('Reconnecting…');
           startPlayback(state.current, true);
         }
@@ -598,7 +719,67 @@
         state.lastTime = video.currentTime;
         if (!state.viaProxy) setStatus('');
       }
-    }, 5000);
+    }, 2000);
+  }
+
+  /**
+   * First-line recovery for a stalled live stream.
+   *
+   * hls.js can restart its loader without rebuilding the media source, which
+   * keeps the buffered video and reconnects in a fraction of the time a full
+   * teardown costs. Only fall back to a complete restart if that fails.
+   */
+  function recoverStalledPlayback() {
+    const hls = state.hls;
+    if (!hls) return false;
+    try {
+      state.recoverCount += 1;
+      if (state.recoverCount > 2) return false;   // stop looping; do a full restart
+      setStatus('Reconnecting…', true);
+      // If we are hanging on a heavy rendition, step down one on the way back.
+      stepDownOnTrouble();
+      hls.startLoad(-1);                          // -1: resume from the live edge
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Drop to a lighter rendition after repeated trouble.
+   *
+   * Only useful when the renditions actually differ — several broadcasters
+   * advertise tiers that are the same encode, in which case this is a harmless
+   * no-op. `tools/diagnostics.html` reports the true per-rendition sizes.
+   */
+  function stepDownOnTrouble() {
+    const hls = state.hls;
+    if (!hls || !state.levels || state.levels.length < 2) return;
+    if (!levelsDiffer()) return;
+    const current = hls.currentLevel >= 0 ? hls.currentLevel : hls.loadLevel;
+    if (current > 0) {
+      hls.currentLevel = current - 1;
+      renderQuality();
+    }
+  }
+
+  /**
+   * Do the advertised renditions actually have different bitrates?
+   *
+   * Some broadcasters list tiers that are the same encode behind different
+   * URIs, so switching gains nothing. Their master playlists are not
+   * trustworthy either — Fortune TV advertises a 480p @ 1 Mbps tier while
+   * actually serving 1280x720 @ 3 Mbps on both URIs — so this compares the
+   * declared values only as a rough signal, and `abrMaxWithRealBitrate` is what
+   * actually keeps the ABR honest. `tools/diagnostics.html` measures the real
+   * per-rendition sizes when you need the truth.
+   */
+  function levelsDiffer() {
+    const rates = (state.levels || []).map((l) => l.bitrate || 0).filter(Boolean);
+    if (rates.length < 2) return false;
+    const min = Math.min(...rates);
+    const max = Math.max(...rates);
+    return min > 0 && max / min >= 1.3;
   }
 
   function teardownPlayer() {
@@ -977,6 +1158,7 @@
     clearTimeout(state.startTimer);
     state.startTimer = null;
     state.recoverCount = 0;
+    state.networkRetries = 0;
     setSpinner(false);
     hideError();
     dom.livePill.dataset.state = 'live';
@@ -992,7 +1174,7 @@
   video.addEventListener('waiting', () => {
     if (!dom.errbox.hidden) return;
     setSpinner(true, 'Buffering…');
-    setStatus('Buffering…');
+    setStatus('Buffering…', true);
   });
   video.addEventListener('volumechange', syncTransport);
   video.addEventListener('error', () => {
