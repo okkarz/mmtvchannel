@@ -324,13 +324,23 @@ D-pad highlight can't end up on something the viewer cannot see.
 
 ### When something goes wrong
 
-Failures surface as a panel over the video offering **Retry**, **Try via proxy**
-(when a proxy is available), **Next channel** and **Dismiss**, plus a close button
-in the corner. Back/Escape dismisses the panel rather than throwing you out of the
-channel — a second Back then returns to the grid. While the panel is up, D-pad
-navigation is confined to it, so the highlight can never land on a control
-hidden behind it. Dismissing also lets the watchdog resume, so it will reconnect
-on its own if the picture really has stalled.
+Failures surface as a panel over the video offering:
+
+| Action | What it does |
+|---|---|
+| **Retry** | Reloads the current channel (the primary action) |
+| **Try via proxy** | Shown only when a proxy is available and not already in use |
+| **Next channel** | Moves to the next live channel |
+| **Dismiss** | Clears the message and returns to watching |
+
+There is deliberately **one** dismiss control, not two — an earlier version also
+had a ✕ in the corner, but it called the same function, so it was removed.
+
+Back/Escape also dismisses the panel rather than throwing you out of the channel;
+a second Back then returns to the grid. While the panel is up, D-pad navigation
+is confined to it, so the highlight can never land on a control hidden behind it.
+Dismissing lets the watchdog resume, so it will reconnect on its own if the
+picture really has stalled.
 
 **Proxy fallback.** Channels marked `needsProxy` go through the proxy immediately.
 Everything else tries the broadcaster directly and recovers through the ladder

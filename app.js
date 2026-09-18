@@ -56,7 +56,6 @@
     proxyBtn: $('#proxyBtn'),
     nextBtn: $('#nextBtn'),
     dismissBtn: $('#dismissBtn'),
-    errClose: $('#errClose'),
 
     playBtn: $('#playBtn'),
     muteBtn: $('#muteBtn'),
@@ -1226,7 +1225,6 @@
   });
   dom.nextBtn.addEventListener('click', () => playNext(1));
   dom.dismissBtn.addEventListener('click', dismissError);
-  dom.errClose.addEventListener('click', dismissError);
 
   /* Video element */
   const video = dom.video;

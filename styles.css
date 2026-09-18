@@ -464,13 +464,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
   gap: 10px; padding: 24px; text-align: center;
   background: rgba(8, 8, 18, .9);
 }
-/* Dismiss control sits in the corner so the panel is never a dead end. */
-.errbox__close {
-  position: absolute;
-  top: max(12px, env(safe-area-inset-top));
-  right: max(12px, env(safe-area-inset-right));
-  background: rgba(40, 40, 66, .72);
-}
 .errbox__icon { width: 40px; height: 40px; color: var(--danger); margin-bottom: 2px; }
 .errbox__title { font-size: 20px; font-weight: 700; }
 .errbox__msg { font-size: 14.5px; color: var(--fg-2); max-width: 46ch; }

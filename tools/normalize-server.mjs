@@ -46,9 +46,14 @@ const server = http.createServer((req, res) => {
       res.end('not found');
       return;
     }
-    res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
+    res.writeHead(200, {
+      'content-type': MIME[path.extname(file)] || 'application/octet-stream',
+      // Dev only: never let the browser cache. Without this an edited app.js
+      // keeps being served from cache, which looks exactly like a code bug.
+      'cache-control': 'no-store, must-revalidate',
+    });
     res.end(data);
   });
 });
 
-server.listen(PORT, () => console.log(`normalize server on http://localhost:${PORT}`));
+server.listen(PORT, () => console.log(`normalize server on http://localhost:${PORT} (no-cache)`));
