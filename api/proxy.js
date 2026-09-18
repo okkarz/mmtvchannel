@@ -147,8 +147,18 @@ export default async function handler(req, res) {
       redirect: 'follow',
     });
   } catch (error) {
+    // `fetch failed` alone is useless when debugging a specific broadcaster, so
+    // include the underlying cause chain (ECONNREFUSED, cert error, DNS, …).
+    const cause = error && error.cause;
+    const detail = [
+      error && error.message,
+      cause && cause.message,
+      cause && cause.code,
+      cause && cause.errno,
+    ].filter(Boolean).join(' / ');
+    console.error('[proxy] upstream failed', targetUrl.href, detail);
     res.writeHead(502, { ...CORS, 'Content-Type': 'text/plain; charset=utf-8' });
-    res.end(`Upstream fetch failed: ${error && error.message}`);
+    res.end(`Upstream fetch failed: ${detail}`);
     return;
   }
 
