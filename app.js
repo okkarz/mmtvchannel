@@ -11,7 +11,7 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const CHANNELS = window.CHANNELS || [];
   const CATEGORIES = window.CATEGORIES || ['All'];
-  const APP_VERSION = 'v1.1.0';
+  const APP_VERSION = 'v1.1.1';
 
   const byId = (id) => CHANNELS.find((c) => c.id === id) || null;
   const liveChannels = () => CHANNELS.filter((c) => !c.offline);

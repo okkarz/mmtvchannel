@@ -36,12 +36,16 @@ the app — several Myanmar broadcasters actively block browser playback:
 
 | Host | What it does | Needs proxy |
 |---|---|---|
-| `mrtvott.com` | returns `403` to browser requests | **yes** |
 | `ygncdn.com` | media segments return `403` unless the `Referer` is ygncdn's own origin | **yes** |
 | `rtmptv.fortunebb.net:8282` | **plain HTTP only** (no TLS on 8282 or 443) + no CORS → blocked as mixed content | **yes** |
+| `mrtvott.com` | CORS `*`, plays directly (8 MRTV-family channels) | no |
 | `live.pyoneplay.com` | CORS `*`, any referrer accepted (MRTV-4, Channel 7) | no |
 | `live-stream.dvb.no` | sends `Access-Control-Allow-Origin: *` | no |
 | `pplive.comquas.com` | sends `Access-Control-Allow-Origin: *` | no |
+
+> If you re-probe these hosts, use a **GET with an `Origin` header**. `mrtvott.com`
+> answers a `HEAD` request *without* `Access-Control-Allow-Origin` but returns it
+> on `GET`, so `curl -I` makes a working stream look proxy-only.
 
 A web page cannot set its own `Referer` or bypass mixed-content rules, so the fix
 is a one-hop server-side proxy.

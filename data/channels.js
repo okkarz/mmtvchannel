@@ -6,13 +6,17 @@
  *   needsProxy: true when the host blocks direct browser playback — no CORS
  *               headers, a Referer allow-list, or plain HTTP (mixed content).
  *               Verified behaviour:
- *                 mrtvott.com          → 403 to browsers      → proxy
+ *                 mrtvott.com          → CORS * on GET, plays directly → no proxy
  *                 ygncdn.com           → segments 403 unless the Referer is
  *                                        its own origin        → proxy
  *                 rtmptv.fortunebb.net → plain HTTP + no CORS → proxy
  *                 live.pyoneplay.com   → CORS * and accepts any Referer → direct
  *                 live-stream.dvb.no   → CORS * and accepts any Referer → direct
  *                 pplive.comquas.com   → CORS * and accepts any Referer → direct
+ *
+ * NOTE: test CORS with a GET carrying an `Origin` header. mrtvott.com answers a
+ * HEAD request without Access-Control-Allow-Origin but returns it on GET, so
+ * probing with `curl -I` wrongly marks a working stream as proxy-only.
  *
  * Verified formats — all are HLS (m3u8) and play in hls.js.
  * `token` channels mint a short-lived signed URL and cannot be hard-coded.
@@ -27,7 +31,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mrtv.png',
     url: 'https://mrtvott.com/cache/MRTV-HD/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'HD',
     color: '#F2C230',
     featured: true,
@@ -41,7 +45,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mrtvnews.png',
     url: 'https://mrtvott.com/cache/MRTV-NEWS-HD/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'HD',
     color: '#2563EB',
   },
@@ -54,7 +58,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mrtv-sports.png',
     url: 'https://mrtvott.com/cache/MRTV-SPORT/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'SD',
     color: '#16A34A',
   },
@@ -67,7 +71,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mrtv-farmer.png',
     url: 'https://mrtvott.com/cache/MRTV-FARMER/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'SD',
     color: '#65A30D',
   },
@@ -80,7 +84,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mrtv-nrc.png',
     url: 'https://mrtvott.com/cache/MRTV-NRC-HD/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'HD',
     color: '#9333EA',
   },
@@ -93,7 +97,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mrtv-ent.png',
     url: 'https://mrtvott.com/cache/MRTV-Ent-HD/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'HD',
     color: '#DB2777',
   },
@@ -106,7 +110,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/hluttaw.png',
     url: 'https://mrtvott.com/cache/MRTV-HLUTTAW/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'SD',
     color: '#DC2626',
   },
@@ -119,7 +123,7 @@ window.CHANNELS = [
     language: 'English',
     logo: 'assets/logos/mitv.png',
     url: 'https://mrtvott.com/cache/MITV/master.m3u8',
-    needsProxy: true,
+    needsProxy: false,
     quality: 'SD',
     color: '#0891B2',
   },
