@@ -153,6 +153,7 @@ rings are deliberately large, and Home/Back always returns you to where you were
 | Back / Esc | back to the grid (closes overlays first) |
 | Space | play / pause |
 | M · F · C · Q | mute · fullscreen · channel list · quality |
+| R | rotate the screen (phones) |
 | / · ? | search · shortcuts |
 
 Back-key codes from webOS (`461`), Tizen (`10009`) and Orsay (`10033`) remotes are
@@ -160,6 +161,21 @@ handled, alongside `Backspace` and `Escape`.
 
 Layout adapts from 2 columns on a phone to 6 on a 1080p TV, with larger type,
 bigger hit targets and overscan-safe padding beyond 1500 px.
+
+### Rotating the screen on a phone
+
+The player has a **rotate button** (shown only on handhelds, between the
+picture-in-picture and fullscreen controls) that forces landscape, so you can
+watch widescreen video without holding the phone sideways:
+
+- **Android / Chromium** — locks the real orientation via the Screen Orientation
+  API. Because browsers only permit this while fullscreen, the button enters
+  fullscreen first. Pressing it again locks back to portrait.
+- **iOS Safari** — has no orientation API, so the button opens Safari's native
+  fullscreen video player instead, which handles rotation itself.
+- **Anything else** — explains that the device has to be turned.
+
+Leaving the player releases any orientation lock.
 
 ---
 

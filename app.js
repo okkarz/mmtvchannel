@@ -63,6 +63,7 @@
     qualityLabel: $('#qualityLabel'),
     pipBtn: $('#pipBtn'),
     fsBtn: $('#fsBtn'),
+    rotateBtn: $('#rotateBtn'),
 
     drawer: $('#drawer'),
     drawerList: $('#drawerList'),
@@ -323,6 +324,7 @@
 
   function showHome() {
     closeOverlays();
+    releaseOrientation();
     teardownPlayer();
     state.current = null;
     dom.viewPlayer.hidden = true;
@@ -849,6 +851,7 @@
   dom.playBtn.addEventListener('click', togglePlay);
   dom.qualityBtn.addEventListener('click', cycleQuality);
   dom.fsBtn.addEventListener('click', toggleFullscreen);
+  dom.rotateBtn.addEventListener('click', toggleRotate);
   dom.pipBtn.addEventListener('click', async () => {
     try {
       if (document.pictureInPictureElement) await document.exitPictureInPicture();
@@ -881,6 +884,69 @@
     const request = el.requestFullscreen || el.webkitRequestFullscreen;
     if (request) request.call(el);
     else if (dom.video.webkitEnterFullscreen) dom.video.webkitEnterFullscreen();
+  }
+
+  /* ── Screen rotation (phones) ───────────────────────────────────────────── */
+
+  const orientation = screen.orientation;
+  const isHandheld = window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
+  function currentOrientation() {
+    if (orientation && orientation.type) {
+      if (orientation.type.startsWith('landscape')) return 'landscape';
+      if (orientation.type.startsWith('portrait')) return 'portrait';
+    }
+    // Fall back to the viewport shape (also covers browsers without the API).
+    return window.innerWidth > window.innerHeight ? 'landscape' : 'portrait';
+  }
+
+  function syncRotate() {
+    const landscape = currentOrientation() === 'landscape';
+    dom.rotateBtn.classList.toggle('is-landscape', landscape);
+    dom.rotateBtn.setAttribute('aria-label',
+      landscape ? 'Rotate to portrait (R)' : 'Rotate to landscape (R)');
+  }
+
+  /**
+   * Rotate the screen.
+   *
+   * Chromium (Android) can lock the real orientation, but only while the page is
+   * fullscreen — so request fullscreen first. Safari has no orientation API at
+   * all, so fall back to its native fullscreen video player, which handles
+   * rotation itself. Anything else gets a plain instruction.
+   */
+  async function toggleRotate() {
+    const target = currentOrientation() === 'landscape' ? 'portrait' : 'landscape';
+
+    if (orientation && typeof orientation.lock === 'function') {
+      try {
+        if (!document.fullscreenElement) {
+          const request = dom.stage.requestFullscreen || dom.stage.webkitRequestFullscreen;
+          if (request) await request.call(dom.stage);
+        }
+        await orientation.lock(target);
+        syncRotate();
+        toast(target === 'landscape' ? 'Locked to landscape' : 'Locked to portrait');
+        return;
+      } catch { /* not permitted here — try the Safari path below */ }
+    }
+
+    // Safari: no orientation API. Its native player goes fullscreen and the
+    // user can turn the device; that is the closest available behaviour.
+    if (typeof dom.video.webkitEnterFullscreen === 'function') {
+      dom.video.webkitEnterFullscreen();
+      toast('Rotate your device to turn the screen');
+      return;
+    }
+
+    toast('This browser cannot rotate the screen — turn the device instead');
+  }
+
+  /** Release any orientation lock when returning to the channel grid. */
+  function releaseOrientation() {
+    if (orientation && typeof orientation.unlock === 'function') {
+      try { orientation.unlock(); } catch { /* already free */ }
+    }
   }
 
   function syncTransport() {
@@ -1049,6 +1115,7 @@
     switch (event.key.toLowerCase()) {
       case 'm': event.preventDefault(); dom.muteBtn.click(); break;
       case 'f': event.preventDefault(); toggleFullscreen(); break;
+      case 'r': event.preventDefault(); toggleRotate(); break;
       case 'c': event.preventDefault(); openOverlay('drawer'); break;
       case 'q': event.preventDefault(); cycleQuality(); break;
       case 'p': event.preventDefault(); togglePlay(); break;
@@ -1145,6 +1212,16 @@
   if (!location.hash) location.replace(location.pathname + '#/');
   route();
 
+  // The rotate control is only useful on a handheld; hide it everywhere else.
+  dom.rotateBtn.hidden = !isHandheld;
+  if (isHandheld) {
+    syncRotate();
+    if (orientation && orientation.addEventListener) orientation.addEventListener('change', syncRotate);
+    window.addEventListener('orientationchange', syncRotate);
+    window.addEventListener('resize', syncRotate, { passive: true });
+    document.addEventListener('fullscreenchange', syncRotate);
+  }
+
   // Probe in the background so it never delays first paint.
   detectBuiltinProxy().then(() => {
     if (state.builtinProxy && !prefs.proxyUrl) {
@@ -1154,5 +1231,8 @@
   });
 
   /* Small debug surface for the browser console. */
-  window.__mmtv = { state, prefs, CHANNELS, showPlayer, openChannel, isMixedContent };
+  window.__mmtv = {
+    state, prefs, CHANNELS, showPlayer, openChannel,
+    isMixedContent, toggleRotate, syncRotate, currentOrientation,
+  };
 })();

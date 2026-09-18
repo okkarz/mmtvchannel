@@ -386,6 +386,12 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .
 .pbtn:active { transform: scale(.94); }
 .pbtn__text { font-size: 13.5px; font-weight: 600; padding-inline: 3px; }
 
+/* The rotate control only makes sense on a handheld device. The `hidden`
+   attribute is the source of truth (set from JS after feature detection);
+   this just tunes how it reads when shown. */
+.pbtn--rotate .icon { transition: transform var(--dur-slow) var(--ease-out); }
+.pbtn--rotate.is-landscape .icon { transform: rotate(90deg); }
+
 .pbar__id { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .pbar__names { display: flex; flex-direction: column; min-width: 0; }
 .pbar__names strong { font-size: 17px; font-weight: 680; letter-spacing: -.01em;
@@ -609,6 +615,17 @@ kbd {
   .topbar__search { margin-inline: 0; height: 40px; }
   .view--home { padding-top: 16px; }
   .sectionhead__title { font-size: 20px; }
+}
+
+/* Narrow phones (iPhone SE and similar): six transport controls plus the
+   volume slider stop fitting on one row, so tighten them up instead of letting
+   the row overflow and clip the fullscreen button. */
+@media (max-width: 400px) {
+  .pbar { padding-inline: 8px; }
+  .pbar__transport { gap: 5px; }
+  .pbtn { min-width: 44px; height: 44px; padding: 0 8px; }
+  .pbtn__text { font-size: 12.5px; padding-inline: 1px; }
+  .pbtn--rotate .icon { width: 22px; height: 22px; }
 }
 /* Keep player usable in phone landscape */
 @media (max-height: 480px) and (orientation: landscape) {
