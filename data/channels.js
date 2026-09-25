@@ -136,7 +136,12 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mahar.png',
     url: 'https://ygncdn.com/live/mahar/playlist.m3u8',
-    needsProxy: true, // segments are 403 unless the Referer is ygncdn's own origin
+    // ygncdn 403s a segment that arrives with a *foreign* Referer, but serves it
+    // happily when no Referer is sent at all. The app ships
+    // `Referrer-Policy: no-referrer`, so the browser stays silent and these play
+    // direct — which keeps ~4 Mbps of live video off the Vercel proxy. The
+    // recovery ladder still falls back to the proxy if a host ever 403s anyway.
+    needsProxy: false,
     quality: 'HD',
     color: '#06B6D4',
   },
@@ -149,7 +154,7 @@ window.CHANNELS = [
     language: 'Burmese',
     logo: 'assets/logos/mahar-esports.png',
     url: 'https://ygncdn.com/live/maharesports/playlist.m3u8',
-    needsProxy: true, // segments are 403 unless the Referer is ygncdn's own origin
+    needsProxy: false, // see mahar-hd: a foreign Referer is what triggered the 403
     quality: 'HD',
     color: '#0EA5E9',
   },

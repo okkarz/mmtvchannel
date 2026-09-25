@@ -11,7 +11,7 @@
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const CHANNELS = window.CHANNELS || [];
   const CATEGORIES = window.CATEGORIES || ['All'];
-  const APP_VERSION = 'v1.1.1';
+  const APP_VERSION = 'v1.1.4';
 
   const byId = (id) => CHANNELS.find((c) => c.id === id) || null;
   const liveChannels = () => CHANNELS.filter((c) => !c.offline);
@@ -45,6 +45,7 @@
     playerName: $('#playerName'),
     playerMeta: $('#playerMeta'),
     livePill: $('#livePill'),
+    livePillText: $('#livePillText'),
     statusChip: $('#statusChip'),
     listBtn: $('#listBtn'),
     spinner: $('#spinner'),
@@ -54,6 +55,7 @@
     errMsg: $('#errMsg'),
     retryBtn: $('#retryBtn'),
     proxyBtn: $('#proxyBtn'),
+    vlcBtn: $('#vlcBtn'),
     nextBtn: $('#nextBtn'),
     dismissBtn: $('#dismissBtn'),
 
@@ -401,7 +403,14 @@
     dom.errTitle.textContent = title;
     dom.errMsg.textContent = msg;
     dom.proxyBtn.hidden = !(options && options.proxy && !!effectiveProxy());
+    // VLC is not a browser, so the rules that stop us — CORS, a Referer
+    // allow-list, plain HTTP on a secure page — do not apply to it. Whenever
+    // there is a channel to hand over, that escape hatch is worth offering.
+    dom.vlcBtn.hidden = !state.current;
     dom.errbox.hidden = false;
+    // Nothing is playing, so the pill must stop claiming LIVE next to a message
+    // saying the channel will not play. `playing`/`pause` take it back from here.
+    setLiveState('off');
     // The chrome must stay visible behind a message, and the D-pad needs to be
     // able to reach the message's own buttons.
     showControls();
@@ -431,6 +440,9 @@
    */
   function dismissError() {
     hideError();
+    // Nothing else will fire here (the element is already paused), so put the
+    // pill back in step with what is actually happening.
+    setLiveState(dom.video.paused ? 'paused' : 'live');
     if (!dom.viewPlayer.hidden && document.documentElement.classList.contains('kbd-nav')) {
       requestAnimationFrame(() => dom.backBtn.focus({ preventScroll: true }));
     }
@@ -444,6 +456,102 @@
    */
   function effectiveProxy() {
     return prefs.proxyUrl || state.builtinProxy || '';
+  }
+
+  /* ── Handing a stream to an external player ─────────────────────────────── */
+
+  /**
+   * Build a URL that asks the device to open a stream in VLC.
+   *
+   * A browser cannot play a stream that sends no CORS headers, enforces a
+   * Referer allow-list, or is plain HTTP on an HTTPS page. VLC is not a browser,
+   * so none of those rules apply to it — which makes this a real fix rather than
+   * a workaround, and the one path that needs no proxy at all.
+   *
+   * Every platform registers a different scheme, and none of them are standard:
+   *   Android  `intent://` naming the package, so VLC opens instead of a chooser
+   *   iOS      `vlc-x-callback://` (VLC for iOS 2.4+)
+   *   desktop  `vlc://`, registered by the VLC installer
+   *
+   * The *broadcaster's own* URL is handed over, never the proxy URL: a proxy
+   * address is only meaningful to this page, and VLC has no need of it.
+   *
+   * Caveat worth knowing: the URL parser reads `vlc://https://host/x` as
+   * host=`https` and re-serialises it to `vlc://https//host/x`, losing the
+   * inner scheme. `vlc://` is nevertheless the form VLC's handler is built for,
+   * so it is what gets attempted; on a desktop with no VLC registered the
+   * attempt is a harmless no-op and the copy fallback takes over. The Android
+   * and iOS forms above survive parsing intact.
+   */
+  function externalPlayerUrl(streamUrl) {
+    const ua = navigator.userAgent;
+    // iPadOS reports itself as a Mac, so touch points are the only tell.
+    const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+    if (/Android/i.test(ua)) {
+      const scheme = (streamUrl.match(/^([a-z][a-z0-9+.-]*):/i) || [null, 'https'])[1];
+      const rest = streamUrl.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+      return `intent://${rest}#Intent;scheme=${scheme};action=android.intent.action.VIEW;` +
+        `type=application/x-mpegURL;package=org.videolan.vlc;end`;
+    }
+    if (isIOS) {
+      return `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(streamUrl)}`;
+    }
+    return `vlc://${streamUrl}`;
+  }
+
+  /** Copy text, falling back to the legacy path on insecure origins. */
+  function copyText(text, onDone) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(onDone, () => legacyCopy(text, onDone));
+      return;
+    }
+    legacyCopy(text, onDone);
+  }
+
+  function legacyCopy(text, onDone) {
+    const field = document.createElement('textarea');
+    field.value = text;
+    field.setAttribute('readonly', '');
+    field.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+    document.body.appendChild(field);
+    field.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    field.remove();
+    if (ok) onDone();
+    else toast('Open VLC → Open Network Stream, then paste the stream URL.');
+  }
+
+  /**
+   * Hand the current channel to VLC.
+   *
+   * No API reports whether a protocol handler is installed, so this uses the
+   * only signal there is: if the page is still visible and focused a moment
+   * later, nothing took over. Rather than leaving a dead button, it copies the
+   * stream URL so it can be pasted into VLC by hand — which is also the only
+   * route on a TV, where no external player exists.
+   */
+  function openInExternalPlayer() {
+    const channel = state.current;
+    if (!channel) return;
+
+    let left = false;
+    const markLeft = () => { left = true; };
+    document.addEventListener('visibilitychange', markLeft);
+    window.addEventListener('blur', markLeft);
+
+    try {
+      location.href = externalPlayerUrl(channel.url);
+    } catch { /* an unhandled scheme can throw; the timeout below covers it */ }
+
+    setTimeout(() => {
+      document.removeEventListener('visibilitychange', markLeft);
+      window.removeEventListener('blur', markLeft);
+      if (left || document.visibilityState !== 'visible') return;   // VLC took over
+      copyText(channel.url, () => toast('VLC did not open — stream URL copied. Paste it into VLC → Open Network Stream.'));
+    }, 1800);
   }
 
   /**
@@ -478,7 +586,7 @@
     if (!channel) return;
     teardownPlayer();
     hideError();
-    dom.livePill.dataset.state = 'live';
+    setLiveState('live');
 
     const wantsProxy = state.forceProxyFor === channel.id ||
       (!!channel.needsProxy && !!prefs.autoProxy);
@@ -525,17 +633,28 @@
     // A time-based target so every channel lands at a similar wall-clock delay.
     // hls.js refuses to mix the time-based and count-based families, so only
     // these two are set — adding liveSyncDurationCount here throws at startup.
-    liveSyncDuration: 10,
+    //
+    // On a live stream the forward buffer can never be deeper than the distance
+    // to the live edge, so this value *is* the cushion: at 10s a slow segment
+    // had only ~10s to arrive before playback ran dry. 15s costs 5s of extra
+    // delay behind live (VLC sits further back than that) and buys real slack.
+    liveSyncDuration: 15,
     liveMaxLatencyDuration: 30,
-    // If playback drifts behind, catch up gently rather than seeking (seeking
-    // on a live stream causes a visible jump and another buffering pause).
-    maxLiveSyncPlaybackRate: 1.5,
+    // Catch up gently. hls.js raises playbackRate — up to this value — whenever
+    // latency exceeds liveSyncDuration, and that is a trap on a live stream:
+    // playing at 1.5x drains the buffer 50% faster *and* demands 50% more
+    // bandwidth to keep refilling it. A link that only just sustains the stream
+    // then stalls, falls further behind, speeds up again and never settles —
+    // which is exactly what VLC never does, because it never varies its rate.
+    // 1.1 still trims latency, for 10% extra bandwidth instead of 50%.
+    maxLiveSyncPlaybackRate: 1.1,
 
     // ── Buffer ──────────────────────────────────────────────────────────────
-    // Live needs far less look-ahead than VOD; a smaller target means less to
-    // refill after a dropout, so recovery is quicker.
-    maxBufferLength: 16,
-    maxMaxBufferLength: 40,
+    // A ceiling, not a target: the live edge caps the real buffer at roughly
+    // liveSyncDuration. It only bites after a stall, when latency has grown and
+    // there is room to refill — and 16s cut that recovery short.
+    maxBufferLength: 30,
+    maxMaxBufferLength: 60,
     backBufferLength: 15,
     maxBufferSize: 40 * 1000 * 1000,
 
@@ -616,6 +735,11 @@
 
     video.volume = prefs.volume;
     video.muted = !!prefs.muted;
+    // hls.js raises playbackRate to chase the live edge and normally restores it
+    // when latency is back in range — but a stream torn down mid-catch-up leaves
+    // the rate elevated on the shared <video>, which would silently play every
+    // later channel 50% too fast and drain its buffer. Always start at 1x.
+    video.playbackRate = 1;
 
     if (force || prefs.autoplay) {
       const promise = video.play();
@@ -724,20 +848,41 @@
     showError('Stream unavailable', 'The stream ended unexpectedly or the link has changed.', { proxy: true });
   }
 
-  /** Live links sometimes stall silently — reload the stream if time stops moving. */
+  /** Polls before the watchdog treats frozen playback as a real stall (2s each). */
+  const STALL_STRIKES = 5;
+
+  /**
+   * The LIVE pill has two states: green while the stream is running, white while
+   * it is paused. Colour alone cannot carry that — a white pill still reading
+   * "LIVE" says nothing, and it is the kind of state a viewer glances at rather
+   * than reads. So the label moves with it.
+   */
+  function setLiveState(next) {
+    dom.livePill.dataset.state = next;
+    if (dom.livePillText) {
+      dom.livePillText.textContent = next === 'paused' ? 'PAUSED' : next === 'off' ? 'OFF' : 'LIVE';
+    }
+  }
+
+  /**
+   * Live links sometimes stall silently — restart the loader if time stops
+   * moving. Patience matters more than speed here: hls.js runs its own stall
+   * nudging (`highBufferWatchdogPeriod`, `nudgeMaxRetry`) and most rebuffers
+   * clear themselves, while every recovery we start costs a fresh fragment and
+   * a visible pause. So this waits for ~10s of genuinely frozen playback before
+   * touching anything, instead of the ~4s it used to.
+   */
   function startWatchdog() {
     clearInterval(state.watchdog);
     state.stallCount = 0;
     state.lastTime = dom.video.currentTime;
-    // 2s polls with 2 strikes: a stall is caught in ~6s instead of ~15s, which
-    // is the difference between "a brief hiccup" and "the channel froze".
     state.watchdog = setInterval(() => {
       if (dom.viewPlayer.hidden || !state.current || !dom.errbox.hidden) return;
       const video = dom.video;
       if (video.paused || video.readyState < 2) { state.lastTime = video.currentTime; return; }
       if (video.currentTime === state.lastTime) {
         state.stallCount += 1;
-        if (state.stallCount >= 2) {
+        if (state.stallCount >= STALL_STRIKES) {
           state.stallCount = 0;
           if (recoverStalledPlayback()) return;
           setStatus('Reconnecting…');
@@ -765,9 +910,15 @@
       state.recoverCount += 1;
       if (state.recoverCount > 2) return false;   // stop looping; do a full restart
       setStatus('Reconnecting…', true);
-      // If we are hanging on a heavy rendition, step down one on the way back.
-      stepDownOnTrouble();
-      hls.startLoad(-1);                          // -1: resume from the live edge
+      // Only sacrifice quality once the same stall has come back. Dropping a
+      // rendition on the first hiccup ratcheted a perfectly fast connection
+      // down to 360p for the rest of the session, one stall at a time.
+      if (state.recoverCount > 1) stepDownOnTrouble();
+      // startLoad(-1) resumes from the current playhead rather than jumping to
+      // the live edge: hls.js overrides -1 with `lastCurrentTime`, so whatever
+      // is already buffered stays playable and this costs one fragment, not a
+      // full re-buffer.
+      hls.startLoad(-1);
       return true;
     } catch {
       return false;
@@ -822,6 +973,7 @@
     if (state.hls) { try { state.hls.destroy(); } catch { /* noop */ } state.hls = null; }
     const video = dom.video;
     try { video.pause(); } catch { /* noop */ }
+    video.playbackRate = 1;   // never leak a live-edge catch-up rate into the next channel
     video.removeAttribute('src');
     try { video.load(); } catch { /* noop */ }
     setSpinner(false);
@@ -1235,14 +1387,16 @@
     state.networkRetries = 0;
     setSpinner(false);
     hideError();
-    dom.livePill.dataset.state = 'live';
+    setLiveState('live');
     setStatus(state.viaProxy ? 'Via proxy' : '');
     syncTransport();
     showControls();
   });
   video.addEventListener('pause', () => {
     syncTransport();
-    if (state.current) dom.livePill.dataset.state = 'paused';
+    // A failure pauses the element too, but 'off' is the honest label then —
+    // letting this overwrite it would put PAUSED next to "will not play".
+    if (state.current && dom.errbox.hidden) setLiveState('paused');
     showControls();   // paused: stay visible so play is reachable
   });
   // These all change whether the chrome should be up, so re-evaluate.
@@ -1289,6 +1443,7 @@
     savePrefs();
     toast(prefs.proxyUrl ? 'Proxy saved' : 'Proxy cleared');
   });
+  dom.vlcBtn.addEventListener('click', openInExternalPlayer);
   dom.autoProxyInput.addEventListener('change', () => {
     prefs.autoProxy = dom.autoProxyInput.checked;
     savePrefs();
@@ -1516,5 +1671,6 @@
     state, prefs, CHANNELS, showPlayer, openChannel,
     isMixedContent, toggleRotate, syncRotate, currentOrientation,
     showControls, hideControls, controlsShouldStay,
+    externalPlayerUrl, openInExternalPlayer,
   };
 })();

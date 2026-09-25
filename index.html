@@ -7,6 +7,12 @@
 <meta name="description" content="Watch Myanmar live TV channels — responsive PWA with TV remote (D-pad) support.">
 <meta name="theme-color" content="#0B0B18">
 <meta name="color-scheme" content="dark">
+<!-- Never send a Referer to stream hosts. ygncdn answers a foreign Referer with
+     403 but serves the same segment happily when no Referer is present; a browser
+     otherwise attaches this page's origin automatically on every cross-origin
+     request. The HTTP header in vercel.json takes precedence over this tag, so
+     the two must agree — change both or neither. -->
+<meta name="referrer" content="no-referrer">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -107,7 +113,7 @@
             <small id="playerMeta">—</small>
           </span>
         </div>
-        <span class="livepill" id="livePill"><i></i>LIVE</span>
+        <span class="livepill" id="livePill" data-state="live"><i></i><span id="livePillText">LIVE</span></span>
         <span class="spacer"></span>
         <span class="statuschip" id="statusChip" hidden></span>
         <button class="pbtn" id="listBtn" type="button" aria-label="Channel list (C)" data-focusable data-focus-group="player">
@@ -124,6 +130,7 @@
         <div class="errbox__actions">
           <button class="btn btn--primary" id="retryBtn" type="button" data-focusable data-focus-group="dialog">Retry</button>
           <button class="btn" id="proxyBtn" type="button" hidden data-focusable data-focus-group="dialog">Try via proxy</button>
+          <button class="btn" id="vlcBtn" type="button" hidden data-focusable data-focus-group="dialog">Open in VLC</button>
           <button class="btn" id="nextBtn" type="button" data-focusable data-focus-group="dialog">Next channel</button>
           <button class="btn btn--ghost" id="dismissBtn" type="button" data-focusable data-focus-group="dialog">Dismiss</button>
         </div>
