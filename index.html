@@ -233,6 +233,25 @@
   </div>
 </div>
 
+<!-- ░░ Quality sheet ░░ -->
+<div class="sheet" id="qualitySheet" hidden>
+  <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="qualityTitle">
+    <header class="sheet__head">
+      <h2 id="qualityTitle">Video quality</h2>
+      <button class="pbtn" id="qualityClose" type="button" aria-label="Close quality" data-focusable data-focus-group="dialog">
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet__body">
+      <p class="field__hint" id="qualityHint">
+        Auto follows your connection. Choosing a level holds it there — a lower
+        one needs less bandwidth and rebuffers less.
+      </p>
+      <div class="qlist" id="qualityList" role="radiogroup" aria-label="Video quality"></div>
+    </div>
+  </div>
+</div>
+
 <!-- ░░ Help sheet ░░ -->
 <div class="sheet" id="helpSheet" hidden>
   <div class="sheet__panel" role="dialog" aria-modal="true" aria-labelledby="helpTitle">

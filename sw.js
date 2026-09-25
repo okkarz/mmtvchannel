@@ -7,7 +7,7 @@
    • Media (logos, fonts, hls.js) is cache-first — that content is stable.
    • Never caches video segments or playlists (live streams must stay live).
    ========================================================================= */
-const VERSION = 'mmtv-v1.1.4';
+const VERSION = 'mmtv-v1.1.5';
 const SHELL = `${VERSION}-shell`;
 
 /** Everything needed to boot the UI offline. */

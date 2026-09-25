@@ -9,9 +9,23 @@
   /* ── Shorthands ─────────────────────────────────────────────────────────── */
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  /**
+   * Show or hide an element — including an SVG.
+   *
+   * ⚠️ `el.hidden = true` does NOT work on an `SVGElement`: `hidden` is an
+   * HTMLElement IDL attribute, so on an `<svg>` it assigns a plain property and
+   * never touches the DOM attribute the `[hidden]` rule keys off. The icon then
+   * stays visible, and since both state icons are stacked in the same button,
+   * the button appears frozen — the play and pause glyphs simply draw on top of
+   * each other forever. Using the attribute works for HTML and SVG alike.
+   */
+  const setHidden = (el, hidden) => {
+    if (el) el.toggleAttribute('hidden', !!hidden);
+  };
   const CHANNELS = window.CHANNELS || [];
   const CATEGORIES = window.CATEGORIES || ['All'];
-  const APP_VERSION = 'v1.1.4';
+  const APP_VERSION = 'v1.1.5';
 
   const byId = (id) => CHANNELS.find((c) => c.id === id) || null;
   const liveChannels = () => CHANNELS.filter((c) => !c.offline);
@@ -74,6 +88,11 @@
 
     settingsSheet: $('#settingsSheet'),
     settingsClose: $('#settingsClose'),
+
+    qualitySheet: $('#qualitySheet'),
+    qualityClose: $('#qualityClose'),
+    qualityList: $('#qualityList'),
+    qualityHint: $('#qualityHint'),
     proxyInput: $('#proxyInput'),
     builtinProxyNote: $('#builtinProxyNote'),
     autoProxyInput: $('#autoProxyInput'),
@@ -98,7 +117,13 @@
     volume: 1,
     muted: false,
     lastChannel: '',
+    // 0 = Auto. Any other value is a target height in pixels, so the choice
+    // survives moving between channels that advertise different renditions.
+    qualityHeight: 0,
   };
+
+  /** Restored whenever the saved quality choice *can* be honoured. */
+  const QUALITY_HINT_DEFAULT = 'Auto follows your connection. Choosing a level holds it there — a lower one needs less bandwidth and rebuffers less.';
   const prefs = Object.assign({}, defaults, readJSON(STORE_KEY));
 
   function readJSON(key) {
@@ -169,6 +194,10 @@
     current: null,
     hls: null,
     levels: [],
+    // Index of the rendition the saved quality preference resolved to on this
+    // stream, or -1 when no cap is in force (Auto, or a channel that has no
+    // rendition small enough). Drives the button label honestly.
+    qualityCapped: -1,
     viaProxy: false,
     forceProxyFor: null,   // channel id that should always go through the proxy
     builtinProxy: '',      // same-origin /api/proxy, detected on boot when deployed on Vercel
@@ -640,14 +669,24 @@
     // delay behind live (VLC sits further back than that) and buys real slack.
     liveSyncDuration: 15,
     liveMaxLatencyDuration: 30,
-    // Catch up gently. hls.js raises playbackRate — up to this value — whenever
-    // latency exceeds liveSyncDuration, and that is a trap on a live stream:
-    // playing at 1.5x drains the buffer 50% faster *and* demands 50% more
-    // bandwidth to keep refilling it. A link that only just sustains the stream
-    // then stalls, falls further behind, speeds up again and never settles —
-    // which is exactly what VLC never does, because it never varies its rate.
-    // 1.1 still trims latency, for 10% extra bandwidth instead of 50%.
-    maxLiveSyncPlaybackRate: 1.1,
+    // Do NOT let hls.js nudge `playbackRate` to chase the live edge.
+    //
+    // The latency controller runs on `timeupdate` and, while `lowLatencyMode`
+    // (hls.js's default) is on, raises the rate in 0.05 steps up to this value
+    // whenever latency drifts past the target — then drops it back to 1 when it
+    // catches up. On a stream whose latency hovers around the target that is a
+    // constant, tiny rate oscillation, and every change is a discontinuity: a
+    // dropped or repeated frame and a fresh time-stretch on the audio. That is
+    // the "stutters slightly every few seconds" you notice but cannot quite
+    // point at.
+    //
+    // 1 disables the adjustment entirely (hls.js returns early on `=== 1`), so
+    // playback holds a steady 1x exactly like VLC does. It also stops the rate
+    // from demanding extra bandwidth, which means fewer stalls, not more.
+    // Latency drift is still bounded by `liveMaxLatencyDuration` below, which
+    // makes hls.js seek forward once if it ever falls too far behind — a rare
+    // jump instead of permanent micro-judder.
+    maxLiveSyncPlaybackRate: 1,
 
     // ── Buffer ──────────────────────────────────────────────────────────────
     // A ceiling, not a target: the live edge caps the real buffer at roughly
@@ -696,6 +735,7 @@
 
     if (state.hls) { try { state.hls.destroy(); } catch { /* noop */ } state.hls = null; }
     state.levels = [];
+    state.qualityCapped = -1;   // the previous channel's cap must not carry over
 
     const canHlsJs = !!window.Hls && window.Hls.isSupported();
     const nativeHls = !!video.canPlayType('application/vnd.apple.mpegurl');
@@ -715,6 +755,8 @@
       hls.on(window.Hls.Events.MANIFEST_PARSED, (_event, data) => {
         state.levels = data.levels || [];
         renderQuality();
+        applyQualityLock();      // honour a pinned quality before the first fragment
+        renderQualityList();
       });
       hls.on(window.Hls.Events.LEVEL_SWITCHED, renderQuality);
       // Report quality changes so a visible dip explains itself.
@@ -979,25 +1021,193 @@
     setSpinner(false);
     hideError();
     setStatus('');
+    // The element is paused again, but `pause` may not fire if it already was —
+    // without this the button can keep showing "pause" on the next channel.
+    syncTransport();
   }
 
   function renderQuality() {
     const hls = state.hls;
-    if (!hls || !state.levels.length) { dom.qualityLabel.textContent = 'Auto'; return; }
-    const level = state.levels[hls.currentLevel];
+    const locked = Number(prefs.qualityHeight) || 0;
+    const level = hls && state.levels.length ? state.levels[hls.currentLevel] : null;
     const height = level && level.height ? `${level.height}p` : '';
-    dom.qualityLabel.textContent = hls.autoLevelEnabled
-      ? (height ? `Auto · ${height}` : 'Auto')
-      : (height || 'Auto');
+
+    // Say what is actually in effect, not just what was asked for. A channel
+    // with no rendition at or below the saved height cannot honour it, and
+    // claiming "≤360p" while showing 720p would be a lie.
+    if (!locked || state.qualityCapped < 0) {
+      dom.qualityLabel.textContent = height ? `Auto · ${height}` : 'Auto';
+      return;
+    }
+    dom.qualityLabel.textContent = `\u2264${locked}p`;
   }
 
-  function cycleQuality() {
+  /**
+   * Which rendition best matches a wanted height?
+   *
+   * The preference is stored as a *height* rather than a level index, because
+   * every channel advertises a different set — 360/720/1080 on Mahar, a single
+   * tier on MRTV-4, and Fortune's two "tiers" that are secretly the same encode.
+   * Picks the tallest level that does not exceed the target, so asking for
+   * "720p" on a channel with only 360p and 1080p gives 360p — the point of the
+   * setting is to use *less* data, so rounding down is the correct direction.
+   */
+  function levelIndexForHeight(target) {
+    const levels = state.levels || [];
+    let best = -1;
+    let bestHeight = -1;
+    levels.forEach((level, index) => {
+      const h = level.height || 0;
+      if (h <= target && h > bestHeight) { bestHeight = h; best = index; }
+    });
+    return best;   // -1 → nothing that small; caller treats it as "no match"
+  }
+
+  /**
+   * Apply the saved quality preference to a freshly parsed manifest.
+   *
+   * Implemented as a *ceiling* (`autoLevelCapping`) rather than by pinning a
+   * single level. Two reasons:
+   *
+   *  • It is what the viewer is actually asking for — "use less data" — and it
+   *    still lets ABR drop lower if the connection degrades, so the cap can
+   *    never itself cause buffering. Forcing one level removes that safety net.
+   *  • A cap is a property that survives reloads and error recovery; assigning
+   *    `currentLevel` is a one-shot request that a level reload or an error can
+   *    silently discard, which left the setting looking like it had been ignored.
+   */
+  function applyQualityLock() {
     const hls = state.hls;
-    if (!hls || state.levels.length < 2) { toast('Only one quality level available'); return; }
-    const next = hls.currentLevel + 1;
-    hls.currentLevel = next >= state.levels.length ? -1 : next;
+    if (!hls || !state.levels.length) return;
+    const target = Number(prefs.qualityHeight) || 0;
+    if (!target) {
+      hls.autoLevelCapping = -1;
+      state.qualityCapped = -1;
+      renderQuality();
+      return;
+    }
+    const index = levelIndexForHeight(target);
+    if (index === -1) {
+      // No rendition that small on this channel — leave ABR alone rather than
+      // silently capping to something the viewer did not pick.
+      hls.autoLevelCapping = -1;
+      state.qualityCapped = -1;
+      renderQuality();
+      return;
+    }
+    hls.autoLevelCapping = index;
+    hls.currentLevel = index;   // switch immediately instead of waiting for the next fragment
+    state.qualityCapped = index;
     renderQuality();
-    toast(hls.currentLevel < 0 ? 'Quality: Auto' : `Quality: ${dom.qualityLabel.textContent}`);
+  }
+
+  /** "1080p · 4.0 Mbps" — declared bitrate, which some hosts overstate. */
+  function levelLabel(level) {
+    const height = level.height ? `${level.height}p` : '';
+    const kbps = level.bitrate ? Math.round(level.bitrate / 1000) : 0;
+    const rate = kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mbps` : (kbps ? `${kbps} kbps` : '');
+    return { name: height || (kbps ? `${kbps} kbps` : 'Level'), meta: height ? rate : '' };
+  }
+
+  /**
+   * Draw the quality options.
+   *
+   * A list is used rather than the old press-to-cycle button because there are
+   * usually three or four renditions and no way to see what you are cycling
+   * through — the viewer had to press Q repeatedly and watch the label change.
+   */
+  function renderQualityList() {
+    const hls = state.hls;
+    dom.qualityList.replaceChildren();
+    const frag = document.createDocumentFragment();
+    const locked = Number(prefs.qualityHeight) || 0;
+
+    const add = (label, meta, checked, onPick) => {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'qitem';
+      item.dataset.focusable = '';
+      item.dataset.focusGroup = 'dialog';
+      item.setAttribute('role', 'radio');
+      item.setAttribute('aria-checked', String(checked));
+
+      const text = document.createElement('span');
+      text.className = 'qitem__txt';
+      const name = document.createElement('strong');
+      name.textContent = label;
+      text.appendChild(name);
+      if (meta) {
+        const small = document.createElement('small');
+        small.textContent = meta;
+        text.appendChild(small);
+      }
+      item.appendChild(text);
+
+      // A tick, not just a highlight: colour alone should not be the only
+      // signal of which option is active.
+      const check = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      check.setAttribute('class', 'icon qitem__check');
+      check.setAttribute('viewBox', '0 0 24 24');
+      check.setAttribute('aria-hidden', 'true');
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', 'M5 13l4 4 10-10');
+      check.appendChild(path);
+      setHidden(check, !checked);
+      item.appendChild(check);
+
+      item.addEventListener('click', onPick);
+      frag.appendChild(item);
+    };
+
+    add('Auto', hls && hls.levels.length ? 'adapts to your connection' : '', !locked, () => {
+      prefs.qualityHeight = 0;
+      savePrefs();
+      if (state.hls) {
+        state.hls.autoLevelCapping = -1;
+        state.hls.currentLevel = -1;
+      }
+      state.qualityCapped = -1;
+      renderQuality();
+      renderQualityList();
+      toast('Quality: Auto');
+    });
+
+    (state.levels || []).forEach((level, index) => {
+      const { name, meta } = levelLabel(level);
+      // Derive the tick from the *preference*, not from hls.currentLevel: the
+      // viewer chose a height, and that stays true even if hls.js is mid-switch
+      // or an error interrupts loading. Reading currentLevel made the tick
+      // vanish the moment the level index briefly disagreed.
+      const checked = locked > 0 && level.height === locked && state.qualityCapped >= 0;
+      add(name, meta, checked, () => {
+        if (!level.height) {
+          // Without a declared height there is nothing to remember, so offering
+          // a lock would be a lie.
+          toast('This stream does not label its qualities — left on Auto');
+          return;
+        }
+        prefs.qualityHeight = level.height;
+        savePrefs();
+        if (state.hls) {
+          state.hls.autoLevelCapping = index;
+          state.hls.currentLevel = index;
+        }
+        state.qualityCapped = index;
+        renderQuality();
+        renderQualityList();
+        toast(`Quality up to ${name}`);
+      });
+    });
+
+    dom.qualityList.appendChild(frag);
+    dom.qualityHint.hidden = !(state.levels && state.levels.length);
+    // Tell the truth when the saved choice cannot apply here — and put the
+    // normal explanation back when it can, so the sheet never shows a stale
+    // warning about a channel the viewer has already left.
+    const lockedNow = Number(prefs.qualityHeight) || 0;
+    dom.qualityHint.textContent = lockedNow && state.qualityCapped < 0
+      ? `This channel has no rendition at or below ${lockedNow}p, so it is playing the lowest it offers.`
+      : QUALITY_HINT_DEFAULT;
   }
 
   /* ── Channel switcher ───────────────────────────────────────────────────── */
@@ -1055,10 +1265,21 @@
       dom.settingsSheet.hidden = false;
     }
     if (which === 'help') dom.helpSheet.hidden = false;
+    if (which === 'quality') {
+      renderQualityList();
+      dom.qualitySheet.hidden = false;
+    }
 
     requestAnimationFrame(() => {
       if (which === 'settings') dom.settingsClose.focus({ preventScroll: true });
       else if (which === 'help') dom.helpClose.focus({ preventScroll: true });
+      else if (which === 'quality') {
+        // Land on the active option, so a remote's OK re-confirms rather than
+        // jumping to the top of the list.
+        const active = $('[aria-checked="true"]', dom.qualityList) ||
+          dom.qualityList.querySelector('[data-focusable]') || dom.qualityClose;
+        active.focus({ preventScroll: true });
+      }
       else if (which === 'drawer') {
         const current = $(`[data-channel-id="${state.current ? state.current.id : ''}"]`, dom.drawerList);
         const fallback = dom.drawerList.querySelector('[data-focusable]') || dom.drawerClose;
@@ -1072,6 +1293,7 @@
     state.overlay = null;
     dom.settingsSheet.hidden = true;
     dom.helpSheet.hidden = true;
+    dom.qualitySheet.hidden = true;
     dom.drawer.hidden = true;
     if (wasPlayer && document.documentElement.classList.contains('kbd-nav')) {
       requestAnimationFrame(() => dom.backBtn.focus({ preventScroll: true }));
@@ -1085,6 +1307,7 @@
   function focusScope() {
     if (state.overlay === 'settings') return dom.settingsSheet;
     if (state.overlay === 'help') return dom.helpSheet;
+    if (state.overlay === 'quality') return dom.qualitySheet;
     if (state.overlay === 'drawer') return dom.drawer;
     // A visible message sits on top of the player, so the controls it covers
     // must not be reachable — otherwise the D-pad walks onto buttons the
@@ -1255,7 +1478,8 @@
   dom.listBtn.addEventListener('click', () => openOverlay('drawer'));
   dom.drawerClose.addEventListener('click', closeOverlays);
   dom.playBtn.addEventListener('click', togglePlay);
-  dom.qualityBtn.addEventListener('click', cycleQuality);
+  dom.qualityBtn.addEventListener('click', () => openOverlay('quality'));
+  dom.qualityClose.addEventListener('click', closeOverlays);
   dom.fsBtn.addEventListener('click', toggleFullscreen);
   dom.rotateBtn.addEventListener('click', toggleRotate);
   dom.pipBtn.addEventListener('click', async () => {
@@ -1358,10 +1582,12 @@
   function syncTransport() {
     const video = dom.video;
     const muted = video.muted || video.volume === 0;
-    $('.icon--play', dom.playBtn).hidden = !video.paused;
-    $('.icon--pause', dom.playBtn).hidden = video.paused;
-    $('.icon--vol', dom.muteBtn).hidden = muted;
-    $('.icon--muted', dom.muteBtn).hidden = !muted;
+    // setHidden, not `.hidden` — these are SVG elements, where the property is
+    // a no-op (see setHidden). This is why the button never appeared to change.
+    setHidden($('.icon--play', dom.playBtn), !video.paused);
+    setHidden($('.icon--pause', dom.playBtn), video.paused);
+    setHidden($('.icon--vol', dom.muteBtn), muted);
+    setHidden($('.icon--muted', dom.muteBtn), !muted);
     dom.muteBtn.setAttribute('aria-label', muted ? 'Unmute (M)' : 'Mute (M)');
     if (Math.abs(Number(dom.volume.value) - video.volume) > 0.001) dom.volume.value = String(video.volume);
   }
@@ -1400,7 +1626,15 @@
     showControls();   // paused: stay visible so play is reachable
   });
   // These all change whether the chrome should be up, so re-evaluate.
-  video.addEventListener('play', showControls);
+  video.addEventListener('play', () => {
+    // `play` fires the instant the intent changes; `playing` waits until frames
+    // actually render, which on a buffering live stream may be many seconds
+    // away or never happen at all. Syncing only on `playing` left the button
+    // showing "play" while the stream was already trying to play — which reads
+    // as a dead button. Reflect the state now, and again when frames land.
+    syncTransport();
+    showControls();
+  });
   video.addEventListener('waiting', () => {
     if (!dom.errbox.hidden) return;
     setSpinner(true, 'Buffering…');
@@ -1547,7 +1781,7 @@
       case 'f': event.preventDefault(); toggleFullscreen(); break;
       case 'r': event.preventDefault(); toggleRotate(); break;
       case 'c': event.preventDefault(); openOverlay('drawer'); break;
-      case 'q': event.preventDefault(); cycleQuality(); break;
+      case 'q': event.preventDefault(); openOverlay('quality'); break;
       case 'p': event.preventDefault(); togglePlay(); break;
       case 'n': event.preventDefault(); playNext(1); break;
       case '?': event.preventDefault(); openOverlay('help'); break;
@@ -1672,5 +1906,6 @@
     isMixedContent, toggleRotate, syncRotate, currentOrientation,
     showControls, hideControls, controlsShouldStay,
     externalPlayerUrl, openInExternalPlayer,
+    syncTransport, setHidden, renderQualityList,
   };
 })();

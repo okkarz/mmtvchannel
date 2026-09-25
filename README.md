@@ -356,17 +356,38 @@ back) and is what keeps playback from running dry.
 Other changes for slow or unstable connections:
 
 - **`abrMaxWithRealBitrate`** — see the warning below.
-- **Gentle live-edge catch-up** (`maxLiveSyncPlaybackRate: 1.1`) — `hls.js`
-  raises `playbackRate` whenever latency exceeds the target, which on a live
-  stream drains the buffer *and* demands more bandwidth to refill it, so a link
-  that only just sustains the stream never settles. VLC never varies its rate;
-  this keeps the correction to 10% instead of 50%.
+- **No live-edge catch-up at all** (`maxLiveSyncPlaybackRate: 1`) — `hls.js`
+  raises `playbackRate` in 0.05 steps whenever latency drifts past the target,
+  then drops it back to 1 when it catches up. On a stream whose latency sits
+  around the target that is a constant, tiny rate oscillation, and every change
+  is a discontinuity: a dropped or repeated frame and a fresh time-stretch on the
+  audio. The result is a *subtle stutter every few seconds* that is hard to
+  attribute. Setting it to `1` disables the adjustment entirely, so playback
+  holds a steady 1× exactly as VLC does. It also stops the rate from demanding
+  extra bandwidth, so this reduces stalls rather than increasing them. Latency
+  drift stays bounded by `liveMaxLatencyDuration: 30`, which makes `hls.js` seek
+  forward once if it ever falls too far behind — a rare jump instead of
+  permanent micro-judder.
 - **ABR biased to stability** — drops a rendition sooner when throughput falls,
   climbs back more cautiously, so it stops oscillating between tiers.
 - **Fast retries** (300 ms) — a dropped packet recovers long before it is visible.
 - **A recovery ladder** for fatal network errors, cheapest first: restart the
   loader (keeps the buffered video) → step down a rendition → switch to the
   proxy → full restart. Previously every fatal error meant a full teardown.
+
+### Choosing a quality
+
+Press **Q** (or the quality button) to open the picker: **Auto** plus every
+rendition the broadcaster advertises, with its resolution and declared bitrate.
+Picking one saves a target *height*, not a level index, so the choice carries
+across channels that advertise different sets.
+
+It works as a **ceiling**, not a pin — `autoLevelCapping` rather than a forced
+level. That is what "use less data" actually means, and it still lets ABR drop
+lower if the connection degrades, so the setting can never itself cause
+buffering. If a channel offers nothing at or below the saved height, the app
+says so and leaves ABR alone rather than silently capping to something you did
+not choose.
 
 Run `tools/diagnostics.html` to measure this on your own connection; it reports
 per-channel startup time and compares advertised bitrates against what the
